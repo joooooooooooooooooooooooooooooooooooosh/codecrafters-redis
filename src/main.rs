@@ -1,9 +1,12 @@
 use anyhow::Result;
-use std::error::Error;
+use bytes::BytesMut;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
 };
+
+pub mod types;
+use types::RESPType;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -13,7 +16,7 @@ async fn main() -> Result<()> {
         match listener.accept().await {
             Ok((stream, _addr)) => {
                 tokio::spawn(async {
-                    _ = handle_connection(stream)
+                    handle_connection(stream)
                         .await
                         .map_err(|e| println!("error: {}", e))
                 });
@@ -23,10 +26,16 @@ async fn main() -> Result<()> {
     }
 }
 
-async fn handle_connection(mut stream: TcpStream) -> Result<(), Box<dyn Error>> {
-    let mut buf = [0; 1024];
+async fn handle_connection(mut stream: TcpStream) -> Result<()> {
+    let mut buf = BytesMut::with_capacity(1024);
     loop {
-        let _len = stream.read(&mut buf).await?;
+        let len = stream.read(&mut buf).await?;
+        if len == 0 {
+            continue;
+        }
+        dbg!(len);
+        let cmd = RESPType::parse(&mut buf)?;
+        dbg!(cmd);
         stream.write_all(b"+PONG\r\n").await?;
     }
 }
