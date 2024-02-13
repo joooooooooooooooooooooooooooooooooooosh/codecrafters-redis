@@ -1,3 +1,5 @@
+use std::io::Read;
+
 use anyhow::{bail, Result};
 use bytes::{Buf, Bytes};
 
@@ -12,8 +14,8 @@ pub enum RESPType {
 
 #[derive(Debug)]
 pub struct Bulk {
-    _len: usize,
-    _data: String,
+    len: usize,
+    data: [u8; 512],
 }
 
 impl RESPType {
@@ -61,7 +63,14 @@ impl RESPType {
     }
 
     fn parse_bulk(buf: &mut Bytes) -> Result<Option<Bulk>> {
-        todo!()
+        if &buf[..4] == b"-1\r\n" {
+            return Ok(None);
+        }
+
+        let len = Self::parse_uinteger(buf)?;
+        let mut data = [0; 512]; // TODO: better soln
+        buf.split_to(len).copy_to_slice(&mut data);
+        Ok(Some(Bulk { len, data }))
     }
 
     fn parse_error(buf: &mut Bytes) -> Result<String> {

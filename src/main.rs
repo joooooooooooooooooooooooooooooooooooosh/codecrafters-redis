@@ -1,5 +1,5 @@
 use anyhow::Result;
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -29,6 +29,7 @@ async fn main() -> Result<()> {
 async fn handle_connection(mut stream: TcpStream) -> Result<()> {
     // let mut buf = BytesMut::with_capacity(1024);
     let mut buf = [0; 1024];
+
     loop {
         let len = stream.read(&mut buf).await?;
         if len == 0 {

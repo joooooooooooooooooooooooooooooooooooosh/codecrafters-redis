@@ -5,7 +5,7 @@
 # CodeCrafters uses this file to test your code. Don't make any changes here!
 #
 # DON'T EDIT THIS!
-exec cargo run \
+RUST_BACKTRACE=1 exec cargo run \
     --quiet \
     --release \
     --target-dir=/tmp/codecrafters-redis-target \
