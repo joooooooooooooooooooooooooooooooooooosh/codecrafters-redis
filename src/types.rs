@@ -274,6 +274,7 @@ impl RESPCmd {
             b"SET" => Self::Set(Self::parse_set(parts)?),
             b"GET" => Self::Get(Self::parse_get(parts)?),
             b"INFO" => Self::Info(Self::parse_info(parts)?),
+            b"REPLCONF" => Self::ReplConf(Self::parse_replconf(parts)?),
             _ => Self::Ping, // try not to crash
         })
     }
@@ -326,5 +327,23 @@ impl RESPCmd {
         } else {
             None
         })
+    }
+
+    fn parse_replconf(mut parts: impl Iterator<Item = RESPType>) -> Result<(Conf, Bulk)> {
+        let Some(RESPType::Bulk(Some(conf))) = parts.next() else {
+            bail!("Missing replconf arguments");
+        };
+
+        let Some(RESPType::Bulk(Some(state))) = parts.next() else {
+            bail!("Missing replconf arguments");
+        };
+
+        let conf = match conf.data.to_ascii_lowercase().as_slice() {
+            b"listening-port" => Conf::ListeningPort,
+            b"capa" => Conf::Capa,
+            _ => bail!("Invalid replconf argument"),
+        };
+
+        Ok((conf, state))
     }
 }
