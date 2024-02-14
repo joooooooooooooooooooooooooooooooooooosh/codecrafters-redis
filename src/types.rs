@@ -209,12 +209,18 @@ impl RESPType {
     }
 }
 
+pub enum Conf {
+    ListeningPort,
+    Capa,
+}
+
 pub enum RESPCmd {
     Echo(Bulk),
     Ping,
     Get(Bulk),
     Set((Bulk, Bulk, Option<SystemTime>)),
     Info(Option<Bulk>),
+    ReplConf((Conf, Bulk)),
 }
 
 impl RESPCmd {
@@ -225,7 +231,19 @@ impl RESPCmd {
             RESPCmd::Get(_) => todo!(),
             RESPCmd::Set(_) => todo!(),
             RESPCmd::Info(_) => todo!(),
+            RESPCmd::ReplConf((conf, bulk)) => Self::handle_replconf(conf, bulk),
         }
+    }
+
+    fn handle_replconf(conf: Conf, bulk: Bulk) -> RESPType {
+        RESPType::Array(vec![
+            RESPType::Bulk(Some(Bulk::from("REPLCONF"))),
+            RESPType::Bulk(Some(Bulk::from(match conf {
+                Conf::ListeningPort => "listening-port",
+                Conf::Capa => "capa",
+            }))),
+            RESPType::Bulk(Some(bulk)),
+        ])
     }
 }
 

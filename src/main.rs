@@ -10,7 +10,7 @@ use tokio::{
 
 pub mod types;
 pub mod work;
-use types::{parse_args, Args, Bulk, Db, Entry, RESPCmd, RESPType};
+use types::{parse_args, Args, Bulk, Conf, Db, Entry, RESPCmd, RESPType};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -20,9 +20,7 @@ async fn main() -> Result<()> {
     let db = Arc::new(Mutex::new(HashMap::<Bulk, Entry>::new()));
 
     if let Some((ref host, ref port)) = args.replica_of {
-        let mut conn = TcpStream::connect(format!("{host}:{port}")).await?;
-        conn.write_all(&RESPCmd::Ping.to_command().to_bytes())
-            .await?;
+        let _ = handshake(host, port, &args).await;
     }
 
     loop {
@@ -56,4 +54,34 @@ async fn handle_connection(mut stream: TcpStream, db: Db, args: Args) -> Result<
         let resp = work::handle_command(cmd, db.clone(), args.clone()).await?;
         stream.write_all(&resp.to_bytes()).await?;
     }
+}
+
+async fn handshake(host: &String, port: &String, args: &Args) -> Result<()> {
+    let mut buf = [0; 512];
+    let mut conn = TcpStream::connect(format!("{host}:{port}")).await?;
+
+    conn.write_all(&RESPCmd::Ping.to_command().to_bytes())
+        .await?;
+
+    conn.read(&mut buf).await?;
+
+    conn.write_all(
+        &RESPCmd::ReplConf((Conf::ListeningPort, Bulk::from(&args.port)))
+            .to_command()
+            .to_bytes(),
+    )
+    .await?;
+
+    conn.read(&mut buf).await?;
+
+    conn.write_all(
+        &RESPCmd::ReplConf((Conf::Capa, Bulk::from("psync2")))
+            .to_command()
+            .to_bytes(),
+    )
+    .await?;
+
+    conn.read(&mut buf).await?;
+
+    Ok(())
 }
