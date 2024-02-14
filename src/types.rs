@@ -221,6 +221,7 @@ pub enum RESPCmd {
     Set((Bulk, Bulk, Option<SystemTime>)),
     Info(Option<Bulk>),
     ReplConf((Conf, Bulk)),
+    Psync((Bulk, Bulk)),
 }
 
 impl RESPCmd {
@@ -232,6 +233,7 @@ impl RESPCmd {
             RESPCmd::Set(_) => todo!(),
             RESPCmd::Info(_) => todo!(),
             RESPCmd::ReplConf((conf, bulk)) => Self::handle_replconf(conf, bulk),
+            RESPCmd::Psync((id, offset)) => Self::handle_psync(id, offset),
         }
     }
 
@@ -243,6 +245,14 @@ impl RESPCmd {
                 Conf::Capa => "capa",
             }))),
             RESPType::Bulk(Some(bulk)),
+        ])
+    }
+
+    fn handle_psync(id: Bulk, offset: Bulk) -> RESPType {
+        RESPType::Array(vec![
+            RESPType::Bulk(Some(Bulk::from("PSYNC"))),
+            RESPType::Bulk(Some(id)),
+            RESPType::Bulk(Some(offset)),
         ])
     }
 }

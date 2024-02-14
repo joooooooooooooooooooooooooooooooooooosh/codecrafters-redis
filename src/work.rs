@@ -15,6 +15,7 @@ pub async fn handle_command(cmd: RESPType, db: Db, args: Args) -> Result<RESPTyp
         RESPCmd::Get(key) => handle_get(key, db).await,
         RESPCmd::Info(topic) => handle_info(topic, args),
         RESPCmd::ReplConf(_) => todo!(),
+        RESPCmd::Psync(_) => todo!(),
     })
 }
 

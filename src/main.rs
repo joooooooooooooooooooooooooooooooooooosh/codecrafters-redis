@@ -63,7 +63,7 @@ async fn handshake(host: &String, port: &String, args: &Args) -> Result<()> {
     conn.write_all(&RESPCmd::Ping.to_command().to_bytes())
         .await?;
 
-    conn.read(&mut buf).await?;
+    conn.read(&mut buf).await?; // TODO: check PONG
 
     conn.write_all(
         &RESPCmd::ReplConf((Conf::ListeningPort, Bulk::from(&args.port)))
@@ -72,7 +72,7 @@ async fn handshake(host: &String, port: &String, args: &Args) -> Result<()> {
     )
     .await?;
 
-    conn.read(&mut buf).await?;
+    conn.read(&mut buf).await?; // TODO: check OK
 
     conn.write_all(
         &RESPCmd::ReplConf((Conf::Capa, Bulk::from("psync2")))
@@ -81,7 +81,16 @@ async fn handshake(host: &String, port: &String, args: &Args) -> Result<()> {
     )
     .await?;
 
-    conn.read(&mut buf).await?;
+    conn.read(&mut buf).await?; // TODO: check OK
+
+    conn.write_all(
+        &RESPCmd::Psync((Bulk::from("?"), Bulk::from("-1")))
+            .to_command()
+            .to_bytes(),
+    )
+    .await?;
+
+    conn.read(&mut buf).await?; // TODO: parse fullresync (simple string)
 
     Ok(())
 }
