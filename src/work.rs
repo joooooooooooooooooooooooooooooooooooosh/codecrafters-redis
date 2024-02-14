@@ -3,6 +3,8 @@ use std::time::SystemTime;
 use crate::types::{Args, Bulk, Db, Entry, RESPCmd, RESPType};
 use anyhow::Result;
 
+const REPLICATION_ID: &str = "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb";
+
 pub async fn handle_command(cmd: RESPType, db: Db, args: Args) -> Result<RESPType> {
     let cmd = RESPCmd::parse(cmd)?;
 
@@ -44,8 +46,18 @@ fn handle_info(topic: Bulk, args: Args) -> RESPType {
 }
 
 fn info_replication(args: Args) -> Bulk {
-    Bulk::from(match args.replica_of {
-        Some(_) => "role:slave",
-        None => "role:master",
-    })
+    let role = match args.replica_of {
+        Some(_) => "slave",
+        None => "master",
+    };
+    Bulk::from(
+        format!(
+            "\
+role:{role}
+master_replid:{REPLICATION_ID}
+master_repl_offset:0
+"
+        )
+        .as_str(),
+    )
 }
