@@ -36,6 +36,19 @@ pub struct Bulk {
     data: Bytes,
 }
 
+impl Bulk {
+    pub fn as_bytes(&self) -> &[u8] {
+        self.data.as_ref()
+    }
+
+    pub fn from(from: &str) -> Self {
+        Self {
+            len: from.len(),
+            data: Bytes::copy_from_slice(from.as_bytes()),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Entry {
     pub val: Bulk,
@@ -98,8 +111,12 @@ impl RESPType {
     }
 
     fn parse_uinteger(buf: &mut Bytes) -> Result<usize> {
-        // TODO: support longer numbers
-        Ok((buf.get_u8() - 48) as usize)
+        let mut total: usize = 0;
+        while !buf.is_empty() && buf[0].is_ascii_digit() {
+            total *= 10;
+            total += buf.get_u8() as usize - 48
+        }
+        Ok(total)
     }
 
     fn parse_array(buf: &mut Bytes) -> Result<Vec<Self>> {
@@ -158,6 +175,7 @@ pub enum RESPCmd {
     Ping,
     Get(Bulk),
     Set((Bulk, Bulk, Option<SystemTime>)),
+    Info(Bulk),
 }
 
 impl RESPCmd {
@@ -176,7 +194,8 @@ impl RESPCmd {
             b"ECHO" => Self::Echo(Self::parse_echo(parts)?),
             b"SET" => Self::Set(Self::parse_set(parts)?),
             b"GET" => Self::Get(Self::parse_get(parts)?),
-            _ => unimplemented!(),
+            b"INFO" => Self::Info(Self::parse_info(parts)?),
+            _ => Self::Ping, // try not to crash
         })
     }
 
@@ -220,5 +239,13 @@ impl RESPCmd {
         };
 
         Ok(key)
+    }
+
+    fn parse_info(mut parts: impl Iterator<Item = RESPType>) -> Result<Bulk> {
+        let Some(RESPType::Bulk(Some(topic))) = parts.next() else {
+            bail!("Info requires a topic");
+        };
+
+        Ok(topic)
     }
 }

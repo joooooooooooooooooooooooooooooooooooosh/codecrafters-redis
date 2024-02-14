@@ -51,7 +51,6 @@ async fn handle_connection(mut stream: TcpStream, db: Db) -> Result<()> {
         let cmd = RESPType::parse(&mut buf)?;
 
         let resp = work::handle_command(cmd, db.clone()).await?;
-
         stream.write_all(&resp.to_bytes()).await?;
     }
 }

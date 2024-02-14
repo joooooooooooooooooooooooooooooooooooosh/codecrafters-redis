@@ -11,6 +11,7 @@ pub async fn handle_command(cmd: RESPType, db: Db) -> Result<RESPType> {
         RESPCmd::Ping => RESPType::String(String::from("PONG")),
         RESPCmd::Set((key, val, timeout)) => handle_set(key, val, timeout, db).await,
         RESPCmd::Get(key) => handle_get(key, db).await,
+        RESPCmd::Info(topic) => handle_info(topic),
     })
 }
 
@@ -33,4 +34,15 @@ async fn handle_get(key: Bulk, db: Db) -> RESPType {
     });
 
     RESPType::Bulk(val)
+}
+
+fn handle_info(topic: Bulk) -> RESPType {
+    RESPType::Bulk(Some(match topic.as_bytes() {
+        b"replication" => info_replication(),
+        _ => unimplemented!(),
+    }))
+}
+
+fn info_replication() -> Bulk {
+    Bulk::from("role:master")
 }
