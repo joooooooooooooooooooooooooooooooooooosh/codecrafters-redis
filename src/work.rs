@@ -15,7 +15,8 @@ pub async fn handle_command(cmd: RESPType, db: Db, args: Args) -> Result<RESPTyp
         RESPCmd::Get(key) => handle_get(key, db).await,
         RESPCmd::Info(topic) => handle_info(topic, args),
         RESPCmd::ReplConf(_) => RESPType::String(String::from("OK")), // TODO: handle properly
-        RESPCmd::Psync(_) => todo!(),
+        RESPCmd::Psync((id, offset)) => handle_psync(id, offset),
+        RESPCmd::FullResync(_) => todo!(),
     })
 }
 
@@ -65,4 +66,8 @@ master_repl_offset:0
         )
         .as_str(),
     )
+}
+
+fn handle_psync(_id: Bulk, _offset: Bulk) -> RESPType {
+    RESPType::String(format!("FULLRESYNC {REPLICATION_ID} 0"))
 }

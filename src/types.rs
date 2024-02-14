@@ -2,6 +2,8 @@ use std::{
     char,
     collections::HashMap,
     env::args,
+    fmt::Display,
+    io::Read,
     ops::Add,
     sync::Arc,
     time::{Duration, SystemTime},
@@ -71,6 +73,14 @@ impl Bulk {
             len: from.len(),
             data: Bytes::copy_from_slice(from.as_bytes()),
         }
+    }
+}
+
+impl Display for Bulk {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut s = String::with_capacity(self.len);
+        let _ = self.data.as_ref().read_to_string(&mut s);
+        f.write_str(s.as_str())
     }
 }
 
@@ -222,6 +232,7 @@ pub enum RESPCmd {
     Info(Option<Bulk>),
     ReplConf((Conf, Bulk)),
     Psync((Bulk, Bulk)),
+    FullResync((Bulk, Bulk)),
 }
 
 impl RESPCmd {
@@ -234,6 +245,7 @@ impl RESPCmd {
             RESPCmd::Info(_) => todo!(),
             RESPCmd::ReplConf((conf, bulk)) => Self::handle_replconf(conf, bulk),
             RESPCmd::Psync((id, offset)) => Self::handle_psync(id, offset),
+            RESPCmd::FullResync((id, offset)) => Self::handle_full_resync(id, offset),
         }
     }
 
@@ -255,6 +267,10 @@ impl RESPCmd {
             RESPType::Bulk(Some(offset)),
         ])
     }
+
+    fn handle_full_resync(id: Bulk, offset: Bulk) -> RESPType {
+        RESPType::String(format!("FULLRESYNC {id} {offset}"))
+    }
 }
 
 impl RESPCmd {
@@ -275,6 +291,7 @@ impl RESPCmd {
             b"GET" => Self::Get(Self::parse_get(parts)?),
             b"INFO" => Self::Info(Self::parse_info(parts)?),
             b"REPLCONF" => Self::ReplConf(Self::parse_replconf(parts)?),
+            b"PSYNC" => Self::Psync(Self::parse_psync(parts)?),
             _ => Self::Ping, // try not to crash
         })
     }
@@ -345,5 +362,17 @@ impl RESPCmd {
         };
 
         Ok((conf, state))
+    }
+
+    fn parse_psync(mut parts: impl Iterator<Item = RESPType>) -> Result<(Bulk, Bulk)> {
+        let Some(RESPType::Bulk(Some(repl_id))) = parts.next() else {
+            bail!("Missing repl_id");
+        };
+
+        let Some(RESPType::Bulk(Some(offset))) = parts.next() else {
+            bail!("Missing offset");
+        };
+
+        Ok((repl_id, offset))
     }
 }
