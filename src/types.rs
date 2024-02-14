@@ -1,10 +1,25 @@
-use std::char;
+use std::{
+    char,
+    collections::HashMap,
+    ops::Add,
+    sync::Arc,
+    time::{Duration, SystemTime},
+};
 
 use anyhow::{bail, Result};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
+use tokio::sync::Mutex;
+
+pub type Db = Arc<Mutex<HashMap<Bulk, Entry>>>;
 
 static CRLF: &[u8; 2] = b"\r\n";
 static NIL_BULK: &[u8; 4] = b"-1\r\n";
+
+const INTEGER: u8 = b':';
+const STRING: u8 = b'+';
+const BULK: u8 = b'$';
+const ARRAY: u8 = b'*';
+const ERROR: u8 = b'-';
 
 #[derive(Debug)]
 pub enum RESPType {
@@ -15,10 +30,16 @@ pub enum RESPType {
     Error(String),
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Bulk {
     len: usize,
     data: Bytes,
+}
+
+#[derive(Clone, Debug)]
+pub struct Entry {
+    pub val: Bulk,
+    pub timeout: Option<SystemTime>,
 }
 
 impl RESPType {
@@ -35,7 +56,7 @@ impl RESPType {
     fn ser_string(s: String) -> BytesMut {
         let mut resp = BytesMut::with_capacity(s.len());
 
-        resp.put_u8(b'+');
+        resp.put_u8(STRING);
         resp.put_slice(&s.into_bytes());
         resp.put_slice(CRLF);
 
@@ -45,7 +66,7 @@ impl RESPType {
     fn ser_bulk(b: Option<Bulk>) -> BytesMut {
         let mut resp = BytesMut::with_capacity(b.as_ref().map_or(5, |b| b.len));
 
-        resp.put_u8(b'$');
+        resp.put_u8(BULK);
         if let Some(b) = b {
             resp.put_slice(&b.len.to_string().into_bytes());
             resp.put_slice(CRLF);
@@ -63,11 +84,11 @@ impl RESPType {
     pub fn parse(buf: &mut Bytes) -> Result<Self> {
         let typ = buf.get_u8();
         Ok(match typ {
-            b':' => Self::Integer(Self::parse_integer(buf)?),
-            b'+' => Self::String(Self::parse_string(buf)?),
-            b'$' => Self::Bulk(Self::parse_bulk(buf)?),
-            b'*' => Self::Array(Self::parse_array(buf)?),
-            b'-' => Self::Error(Self::parse_error(buf)?),
+            INTEGER => Self::Integer(Self::parse_integer(buf)?),
+            STRING => Self::String(Self::parse_string(buf)?),
+            BULK => Self::Bulk(Self::parse_bulk(buf)?),
+            ARRAY => Self::Array(Self::parse_array(buf)?),
+            ERROR => Self::Error(Self::parse_error(buf)?),
             _ => bail!("Invalid type marker"),
         })
     }
@@ -135,6 +156,8 @@ impl RESPType {
 pub enum RESPCmd {
     Echo(Bulk),
     Ping,
+    Get(Bulk),
+    Set((Bulk, Bulk, Option<SystemTime>)),
 }
 
 impl RESPCmd {
@@ -151,6 +174,8 @@ impl RESPCmd {
         Ok(match cmd.data.to_ascii_uppercase().as_slice() {
             b"PING" => Self::Ping,
             b"ECHO" => Self::Echo(Self::parse_echo(parts)?),
+            b"SET" => Self::Set(Self::parse_set(parts)?),
+            b"GET" => Self::Get(Self::parse_get(parts)?),
             _ => unimplemented!(),
         })
     }
@@ -161,5 +186,41 @@ impl RESPCmd {
         };
 
         Ok(echo)
+    }
+
+    fn parse_set(
+        mut parts: impl Iterator<Item = RESPType>,
+    ) -> Result<(Bulk, Bulk, Option<SystemTime>)> {
+        let now = SystemTime::now();
+        let Some(RESPType::Bulk(Some(key))) = parts.next() else {
+            bail!("Set requires a key");
+        };
+
+        let Some(RESPType::Bulk(Some(val))) = parts.next() else {
+            bail!("Set requires a value");
+        };
+
+        let mut timeout = None;
+        if let Some(RESPType::Bulk(Some(bulk))) = parts.next() {
+            if bulk.data.as_ref().to_ascii_uppercase() == b"PX" {
+                let Some(RESPType::Bulk(Some(mut i))) = parts.next() else {
+                    bail!("PX requires an expiry");
+                };
+
+                let i = RESPType::parse_uinteger(&mut i.data)?;
+
+                timeout = Some(now.add(Duration::from_millis(i as u64)))
+            }
+        }
+
+        Ok((key, val, timeout))
+    }
+
+    fn parse_get(mut parts: impl Iterator<Item = RESPType>) -> Result<Bulk> {
+        let Some(RESPType::Bulk(Some(key))) = parts.next() else {
+            bail!("Set requires a key");
+        };
+
+        Ok(key)
     }
 }

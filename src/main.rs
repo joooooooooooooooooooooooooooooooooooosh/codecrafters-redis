@@ -1,22 +1,28 @@
+use std::{collections::HashMap, sync::Arc};
+
 use anyhow::Result;
 use bytes::Bytes;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
+    sync::Mutex,
 };
 
 pub mod types;
-use types::{RESPCmd, RESPType};
+pub mod work;
+use types::{Bulk, Db, Entry, RESPType};
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let listener = TcpListener::bind("127.0.0.1:6379").await?;
+    let db = Arc::new(Mutex::new(HashMap::<Bulk, Entry>::new()));
 
     loop {
         match listener.accept().await {
             Ok((stream, _addr)) => {
-                tokio::spawn(async {
-                    handle_connection(stream)
+                let db = db.clone();
+                tokio::spawn(async move {
+                    handle_connection(stream, db)
                         .await
                         .map_err(|e| println!("error: {}", e))
                 });
@@ -26,7 +32,7 @@ async fn main() -> Result<()> {
     }
 }
 
-async fn handle_connection(mut stream: TcpStream) -> Result<()> {
+async fn handle_connection(mut stream: TcpStream, db: Db) -> Result<()> {
     let mut buf = [0; 1024]; // TODO: can we read straight into Bytes
 
     loop {
@@ -36,19 +42,11 @@ async fn handle_connection(mut stream: TcpStream) -> Result<()> {
         }
 
         let mut buf = Bytes::copy_from_slice(&buf);
+        dbg!(&buf);
         let cmd = RESPType::parse(&mut buf)?;
 
-        let resp = handle_command(cmd)?;
+        let resp = work::handle_command(cmd, db.clone()).await?;
 
         stream.write_all(&resp.to_bytes()).await?;
     }
-}
-
-fn handle_command(cmd: RESPType) -> Result<RESPType> {
-    let cmd = RESPCmd::parse(cmd)?;
-
-    Ok(match cmd {
-        RESPCmd::Echo(echo) => RESPType::Bulk(Some(echo)),
-        RESPCmd::Ping => RESPType::String(String::from("PONG")),
-    })
 }
