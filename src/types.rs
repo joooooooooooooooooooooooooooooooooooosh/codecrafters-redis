@@ -1,6 +1,7 @@
 use std::{
     char,
     collections::HashMap,
+    env::args,
     ops::Add,
     sync::Arc,
     time::{Duration, SystemTime},
@@ -20,6 +21,30 @@ const STRING: u8 = b'+';
 const BULK: u8 = b'$';
 const ARRAY: u8 = b'*';
 const ERROR: u8 = b'-';
+
+pub struct _Args {
+    pub port: String,
+    pub replica_of: Option<(String, String)>,
+}
+pub type Args = Arc<_Args>;
+
+pub fn parse_args() -> Args {
+    let port = args()
+        .skip_while(|arg| arg != "--port")
+        .skip(1)
+        .next()
+        .unwrap_or(String::from("6379"));
+
+    let mut replica_iter = args().skip_while(|arg| arg != "--replicaof").skip(1);
+    let replica_of = if let Some(master_host) = replica_iter.next() {
+        let master_port = replica_iter.next().expect("host must have port");
+        Some((master_host, master_port))
+    } else {
+        None
+    };
+
+    Arc::new(_Args { port, replica_of })
+}
 
 #[derive(Debug)]
 pub enum RESPType {
@@ -112,10 +137,12 @@ impl RESPType {
 
     fn parse_uinteger(buf: &mut Bytes) -> Result<usize> {
         let mut total: usize = 0;
+
         while !buf.is_empty() && buf[0].is_ascii_digit() {
             total *= 10;
             total += buf.get_u8() as usize - 48
         }
+
         Ok(total)
     }
 

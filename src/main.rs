@@ -1,4 +1,4 @@
-use std::{collections::HashMap, env::args, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
 use anyhow::Result;
 use bytes::Bytes;
@@ -10,25 +10,22 @@ use tokio::{
 
 pub mod types;
 pub mod work;
-use types::{Bulk, Db, Entry, RESPType};
+use types::{parse_args, Args, Bulk, Db, Entry, RESPType};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let port = args()
-        .skip_while(|arg| arg != "--port")
-        .skip(1)
-        .next()
-        .unwrap_or(String::from("6379"));
+    let args = parse_args();
 
-    let listener = TcpListener::bind(format!("127.0.0.1:{port}")).await?;
+    let listener = TcpListener::bind(format!("127.0.0.1:{}", args.port)).await?;
     let db = Arc::new(Mutex::new(HashMap::<Bulk, Entry>::new()));
 
     loop {
         match listener.accept().await {
             Ok((stream, _addr)) => {
                 let db = db.clone();
+                let args = args.clone();
                 tokio::spawn(async move {
-                    handle_connection(stream, db)
+                    handle_connection(stream, db, args)
                         .await
                         .map_err(|e| println!("error: {}", e))
                 });
@@ -38,7 +35,7 @@ async fn main() -> Result<()> {
     }
 }
 
-async fn handle_connection(mut stream: TcpStream, db: Db) -> Result<()> {
+async fn handle_connection(mut stream: TcpStream, db: Db, args: Args) -> Result<()> {
     let mut buf = [0; 1024]; // TODO: can we read straight into Bytes
 
     loop {
@@ -50,7 +47,7 @@ async fn handle_connection(mut stream: TcpStream, db: Db) -> Result<()> {
         let mut buf = Bytes::copy_from_slice(&buf);
         let cmd = RESPType::parse(&mut buf)?;
 
-        let resp = work::handle_command(cmd, db.clone()).await?;
+        let resp = work::handle_command(cmd, db.clone(), args.clone()).await?;
         stream.write_all(&resp.to_bytes()).await?;
     }
 }
