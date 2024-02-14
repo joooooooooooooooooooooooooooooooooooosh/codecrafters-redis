@@ -1,7 +1,12 @@
 use std::time::SystemTime;
 
-use crate::types::{Args, Bulk, Db, Entry, RESPCmd, RESPType};
+use crate::bulk;
+use crate::respcmd::RESPCmd;
+use crate::resptype::RESPType;
+use crate::types::{Args, Bulk, Db, Entry};
 use anyhow::Result;
+use tokio::fs::File;
+use tokio::io::AsyncReadExt;
 
 const REPLICATION_ID: &str = "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb";
 
@@ -15,7 +20,7 @@ pub async fn handle_command(cmd: RESPType, db: Db, args: Args) -> Result<RESPTyp
         RESPCmd::Get(key) => handle_get(key, db).await,
         RESPCmd::Info(topic) => handle_info(topic, args),
         RESPCmd::ReplConf(_) => RESPType::String(String::from("OK")), // TODO: handle properly
-        RESPCmd::Psync((id, offset)) => handle_psync(id, offset),
+        RESPCmd::Psync((id, offset)) => handle_psync(id, offset).await?,
         RESPCmd::FullResync(_) => todo!(),
     })
 }
@@ -68,6 +73,15 @@ master_repl_offset:0
     )
 }
 
-fn handle_psync(_id: Bulk, _offset: Bulk) -> RESPType {
-    RESPType::String(format!("FULLRESYNC {REPLICATION_ID} 0"))
+async fn handle_psync(_id: Bulk, _offset: Bulk) -> Result<RESPType> {
+    let mut rdb = Vec::new();
+    File::open("./redis.rdb")
+        .await?
+        .read_to_end(&mut rdb)
+        .await?;
+
+    Ok(RESPType::Multi(vec![
+        RESPCmd::FullResync((bulk!(REPLICATION_ID), bulk!("0"))).to_command(),
+        RESPType::RDBFile(rdb),
+    ]))
 }
