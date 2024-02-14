@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, env::args, sync::Arc};
 
 use anyhow::Result;
 use bytes::Bytes;
@@ -14,7 +14,13 @@ use types::{Bulk, Db, Entry, RESPType};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let listener = TcpListener::bind("127.0.0.1:6379").await?;
+    let port = args()
+        .skip_while(|arg| arg != "--port")
+        .skip(1)
+        .next()
+        .unwrap_or(String::from("6379"));
+
+    let listener = TcpListener::bind(format!("127.0.0.1:{port}")).await?;
     let db = Arc::new(Mutex::new(HashMap::<Bulk, Entry>::new()));
 
     loop {
@@ -42,7 +48,6 @@ async fn handle_connection(mut stream: TcpStream, db: Db) -> Result<()> {
         }
 
         let mut buf = Bytes::copy_from_slice(&buf);
-        dbg!(&buf);
         let cmd = RESPType::parse(&mut buf)?;
 
         let resp = work::handle_command(cmd, db.clone()).await?;

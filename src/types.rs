@@ -191,7 +191,6 @@ impl RESPCmd {
     fn parse_set(
         mut parts: impl Iterator<Item = RESPType>,
     ) -> Result<(Bulk, Bulk, Option<SystemTime>)> {
-        let now = SystemTime::now();
         let Some(RESPType::Bulk(Some(key))) = parts.next() else {
             bail!("Set requires a key");
         };
@@ -208,8 +207,7 @@ impl RESPCmd {
                 };
 
                 let i = RESPType::parse_uinteger(&mut i.data)?;
-
-                timeout = Some(now.add(Duration::from_millis(i as u64)))
+                timeout = Some(SystemTime::now().add(Duration::from_millis(i as u64)))
             }
         }
 

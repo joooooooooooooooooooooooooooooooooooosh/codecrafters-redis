@@ -23,8 +23,6 @@ async fn handle_set(key: Bulk, val: Bulk, timeout: Option<SystemTime>, db: Db) -
 
 async fn handle_get(key: Bulk, db: Db) -> RESPType {
     let db = db.lock().await;
-    dbg!(&db);
-    dbg!(SystemTime::now());
 
     let val = db.get(&key).and_then(|e| {
         if e.timeout.is_some_and(|timeout| timeout < SystemTime::now()) {
