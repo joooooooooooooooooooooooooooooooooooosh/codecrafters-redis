@@ -10,7 +10,7 @@ use tokio::{
 
 pub mod types;
 pub mod work;
-use types::{parse_args, Args, Bulk, Db, Entry, RESPType};
+use types::{parse_args, Args, Bulk, Db, Entry, RESPCmd, RESPType};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -18,6 +18,12 @@ async fn main() -> Result<()> {
 
     let listener = TcpListener::bind(format!("127.0.0.1:{}", args.port)).await?;
     let db = Arc::new(Mutex::new(HashMap::<Bulk, Entry>::new()));
+
+    if let Some((ref host, ref port)) = args.replica_of {
+        let mut conn = TcpStream::connect(format!("{host}:{port}")).await?;
+        conn.write_all(&RESPCmd::Ping.to_command().to_bytes())
+            .await?;
+    }
 
     loop {
         match listener.accept().await {

@@ -38,7 +38,10 @@ async fn handle_get(key: Bulk, db: Db) -> RESPType {
     RESPType::Bulk(val)
 }
 
-fn handle_info(topic: Bulk, args: Args) -> RESPType {
+fn handle_info(topic: Option<Bulk>, args: Args) -> RESPType {
+    // TODO: handle INFO with no topic (all sections)
+    let Some(topic) = topic else { unimplemented!() };
+
     RESPType::Bulk(Some(match topic.as_bytes() {
         b"replication" => info_replication(args),
         _ => unimplemented!(),

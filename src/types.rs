@@ -86,7 +86,7 @@ impl RESPType {
             RESPType::Integer(_) => todo!(),
             RESPType::String(s) => Self::ser_string(s),
             RESPType::Bulk(b) => Self::ser_bulk(b),
-            RESPType::Array(_) => todo!(),
+            RESPType::Array(a) => Self::ser_array(a),
             RESPType::Error(_) => todo!(),
         }
     }
@@ -113,6 +113,18 @@ impl RESPType {
             resp.put_slice(b"-1");
         }
         resp.put_slice(CRLF);
+
+        resp
+    }
+
+    fn ser_array(a: Vec<Self>) -> BytesMut {
+        let mut resp = BytesMut::new();
+
+        resp.put_u8(ARRAY);
+        resp.put_slice(&a.len().to_string().into_bytes());
+        resp.put_slice(CRLF);
+        a.into_iter()
+            .for_each(|val| resp.put_slice(&val.to_bytes()));
 
         resp
     }
@@ -202,7 +214,19 @@ pub enum RESPCmd {
     Ping,
     Get(Bulk),
     Set((Bulk, Bulk, Option<SystemTime>)),
-    Info(Bulk),
+    Info(Option<Bulk>),
+}
+
+impl RESPCmd {
+    pub fn to_command(self) -> RESPType {
+        match self {
+            RESPCmd::Echo(_) => todo!(),
+            RESPCmd::Ping => RESPType::Array(vec![RESPType::Bulk(Some(Bulk::from("PING")))]),
+            RESPCmd::Get(_) => todo!(),
+            RESPCmd::Set(_) => todo!(),
+            RESPCmd::Info(_) => todo!(),
+        }
+    }
 }
 
 impl RESPCmd {
@@ -268,11 +292,11 @@ impl RESPCmd {
         Ok(key)
     }
 
-    fn parse_info(mut parts: impl Iterator<Item = RESPType>) -> Result<Bulk> {
-        let Some(RESPType::Bulk(Some(topic))) = parts.next() else {
-            bail!("Info requires a topic");
-        };
-
-        Ok(topic)
+    fn parse_info(mut parts: impl Iterator<Item = RESPType>) -> Result<Option<Bulk>> {
+        Ok(if let Some(RESPType::Bulk(Some(topic))) = parts.next() {
+            Some(topic)
+        } else {
+            None
+        })
     }
 }
