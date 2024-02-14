@@ -6,7 +6,7 @@ use tokio::{
 };
 
 pub mod types;
-use types::RESPType;
+use types::{RESPCmd, RESPType};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -27,18 +27,28 @@ async fn main() -> Result<()> {
 }
 
 async fn handle_connection(mut stream: TcpStream) -> Result<()> {
-    // let mut buf = BytesMut::with_capacity(1024);
-    let mut buf = [0; 1024];
+    let mut buf = [0; 1024]; // TODO: can we read straight into Bytes
 
     loop {
         let len = stream.read(&mut buf).await?;
         if len == 0 {
             continue;
         }
-        dbg!(len);
+
         let mut buf = Bytes::copy_from_slice(&buf);
         let cmd = RESPType::parse(&mut buf)?;
-        dbg!(cmd);
-        stream.write_all(b"+PONG\r\n").await?;
+
+        let resp = handle_command(cmd)?;
+
+        stream.write_all(&resp.to_bytes()).await?;
     }
+}
+
+fn handle_command(cmd: RESPType) -> Result<RESPType> {
+    let cmd = RESPCmd::parse(cmd)?;
+
+    Ok(match cmd {
+        RESPCmd::Echo(echo) => RESPType::Bulk(Some(echo)),
+        RESPCmd::Ping => RESPType::String(String::from("PONG")),
+    })
 }

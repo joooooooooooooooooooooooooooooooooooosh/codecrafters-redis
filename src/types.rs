@@ -1,7 +1,10 @@
-use std::io::Read;
+use std::char;
 
 use anyhow::{bail, Result};
-use bytes::{Buf, Bytes};
+use bytes::{Buf, BufMut, Bytes, BytesMut};
+
+static CRLF: &[u8; 2] = b"\r\n";
+static NIL_BULK: &[u8; 4] = b"-1\r\n";
 
 #[derive(Debug)]
 pub enum RESPType {
@@ -15,7 +18,45 @@ pub enum RESPType {
 #[derive(Debug)]
 pub struct Bulk {
     len: usize,
-    data: [u8; 512],
+    data: Bytes,
+}
+
+impl RESPType {
+    pub fn to_bytes(self) -> BytesMut {
+        match self {
+            RESPType::Integer(_) => todo!(),
+            RESPType::String(s) => Self::ser_string(s),
+            RESPType::Bulk(b) => Self::ser_bulk(b),
+            RESPType::Array(_) => todo!(),
+            RESPType::Error(_) => todo!(),
+        }
+    }
+
+    fn ser_string(s: String) -> BytesMut {
+        let mut resp = BytesMut::with_capacity(s.len());
+
+        resp.put_u8(b'+');
+        resp.put_slice(&s.into_bytes());
+        resp.put_slice(CRLF);
+
+        resp
+    }
+
+    fn ser_bulk(b: Option<Bulk>) -> BytesMut {
+        let mut resp = BytesMut::with_capacity(b.as_ref().map_or(5, |b| b.len));
+
+        resp.put_u8(b'$');
+        if let Some(b) = b {
+            resp.put_slice(&b.len.to_string().into_bytes());
+            resp.put_slice(CRLF);
+            resp.extend_from_slice(&b.data);
+        } else {
+            resp.put_slice(b"-1");
+        }
+        resp.put_slice(CRLF);
+
+        resp
+    }
 }
 
 impl RESPType {
@@ -36,7 +77,8 @@ impl RESPType {
     }
 
     fn parse_uinteger(buf: &mut Bytes) -> Result<usize> {
-        Ok(buf.get_u8().to_string().parse()?)
+        // TODO: support longer numbers
+        Ok((buf.get_u8() - 48) as usize)
     }
 
     fn parse_array(buf: &mut Bytes) -> Result<Vec<Self>> {
@@ -63,17 +105,20 @@ impl RESPType {
     }
 
     fn parse_bulk(buf: &mut Bytes) -> Result<Option<Bulk>> {
-        if &buf[..4] == b"-1\r\n" {
+        if &buf[..4] == NIL_BULK {
             return Ok(None);
         }
 
         let len = Self::parse_uinteger(buf)?;
-        let mut data = [0; 512]; // TODO: better soln
-        buf.split_to(len).copy_to_slice(&mut data);
+        Self::parse_crlf(buf)?;
+
+        let data = buf.split_to(len);
+        Self::parse_crlf(buf)?;
+
         Ok(Some(Bulk { len, data }))
     }
 
-    fn parse_error(buf: &mut Bytes) -> Result<String> {
+    fn parse_error(_buf: &mut Bytes) -> Result<String> {
         todo!()
     }
 
@@ -88,6 +133,33 @@ impl RESPType {
 }
 
 pub enum RESPCmd {
-    Echo,
+    Echo(Bulk),
     Ping,
+}
+
+impl RESPCmd {
+    pub fn parse(cmd: RESPType) -> Result<Self> {
+        let RESPType::Array(cmd) = cmd else {
+            bail!("Top level command must be array");
+        };
+
+        let mut parts = cmd.into_iter();
+        let Some(RESPType::Bulk(Some(cmd))) = parts.next() else {
+            bail!("Command must be non-null bulk string");
+        };
+
+        Ok(match cmd.data.to_ascii_uppercase().as_slice() {
+            b"PING" => Self::Ping,
+            b"ECHO" => Self::Echo(Self::parse_echo(parts)?),
+            _ => unimplemented!(),
+        })
+    }
+
+    fn parse_echo(mut parts: impl Iterator<Item = RESPType>) -> Result<Bulk> {
+        let Some(RESPType::Bulk(Some(echo))) = parts.next() else {
+            bail!("Echo must take a non-null bulk string");
+        };
+
+        Ok(echo)
+    }
 }
