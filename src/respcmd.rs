@@ -25,6 +25,7 @@ pub enum RESPCmd {
     ReplConf((Conf, Bulk)),
     Psync((Bulk, Bulk)),
     FullResync((Bulk, Bulk)),
+    Wait((Bulk, Bulk)),
 }
 
 macro_rules! respcmd {
@@ -46,6 +47,7 @@ impl RESPCmd {
             RESPCmd::ReplConf((conf, bulk)) => Self::handle_replconf(conf, bulk),
             RESPCmd::Psync((id, offset)) => respcmd!(bulk!("PSYNC") id offset),
             RESPCmd::FullResync((id, offset)) => Self::handle_full_resync(id, offset),
+            RESPCmd::Wait(_) => todo!(),
         }
     }
 
@@ -109,6 +111,8 @@ impl RESPCmd {
             b"INFO" => Self::Info(Self::parse_info(parts)?),
             b"REPLCONF" => Self::ReplConf(Self::parse_replconf(parts)?),
             b"PSYNC" => Self::Psync(Self::parse_psync(parts)?),
+            b"WAIT" => Self::Wait(Self::parse_wait(parts)?),
+            // TODO: FULLRESYNC being handled seperately due to being simple string
             _ => Self::Ping, // try not to crash
         })
     }
@@ -193,5 +197,17 @@ impl RESPCmd {
         };
 
         Ok((repl_id, offset))
+    }
+
+    fn parse_wait(mut parts: impl Iterator<Item = RESPType>) -> Result<(Bulk, Bulk)> {
+        let Some(RESPType::Bulk(Some(num_replicas))) = parts.next() else {
+            bail!("Wait requires num_replicas");
+        };
+
+        let Some(RESPType::Bulk(Some(timeout))) = parts.next() else {
+            bail!("Wait requires timeout");
+        };
+
+        Ok((num_replicas, timeout))
     }
 }

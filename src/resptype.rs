@@ -17,7 +17,7 @@ pub enum RESPType {
 impl RESPType {
     pub fn as_bytes(self) -> BytesMut {
         match self {
-            RESPType::Integer(_) => todo!(),
+            RESPType::Integer(i) => Self::ser_integer(i),
             RESPType::String(s) => Self::ser_string(s),
             RESPType::Bulk(b) => Self::ser_bulk(b),
             RESPType::Array(a) => Self::ser_array(a),
@@ -25,6 +25,16 @@ impl RESPType {
             RESPType::RDBFile(f) => Self::ser_rdb_file(f),
             RESPType::Multi(m) => Self::ser_multi(m),
         }
+    }
+
+    fn ser_integer(i: isize) -> BytesMut {
+        let mut resp = BytesMut::new();
+
+        resp.put_u8(INTEGER);
+        resp.put_slice(i.to_string().as_bytes());
+        resp.put_slice(CRLF);
+
+        resp
     }
 
     fn ser_string(s: String) -> BytesMut {
@@ -107,8 +117,27 @@ impl RESPType {
         ))
     }
 
-    fn parse_integer(_buf: &mut Bytes) -> Result<isize> {
-        todo!()
+    fn parse_integer(buf: &mut Bytes) -> Result<isize> {
+        let sign = match buf[0] {
+            b'-' => {
+                buf.get_u8();
+                -1
+            }
+            b'+' => {
+                buf.get_u8();
+                1
+            }
+            _ => 1,
+        };
+
+        let mut total: isize = 0;
+
+        while !buf.is_empty() && buf[0].is_ascii_digit() {
+            total *= 10;
+            total += buf.get_u8() as isize - 48
+        }
+
+        Ok(sign * total)
     }
 
     pub fn parse_uinteger(buf: &mut Bytes) -> Result<usize> {

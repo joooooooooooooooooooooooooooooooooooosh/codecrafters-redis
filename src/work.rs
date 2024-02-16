@@ -41,8 +41,13 @@ pub async fn handle_command(cmd: RESPCmd, db: Db, config: Config) -> Result<RESP
             handle_replconf_replica(c, arg, config).await?
         }
         RESPCmd::FullResync(_) => todo!(),
+        RESPCmd::Wait((num_replicas, timeout)) => handle_wait(num_replicas, timeout, config).await,
         _ => unimplemented!(), // shouldn't be needed on a replica
     })
+}
+
+async fn handle_wait(_num_replicas: Bulk, _timeout: Bulk, config: Config) -> RESPType {
+    RESPType::Integer(config.read().await.replicas.len() as isize)
 }
 
 async fn handle_replconf(
