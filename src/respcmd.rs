@@ -1,5 +1,5 @@
 use anyhow::{bail, Result};
-use bytes::BytesMut;
+use bytes::Bytes;
 use std::{
     ops::Add,
     time::{Duration, SystemTime},
@@ -25,7 +25,7 @@ pub enum RESPCmd {
     ReplConf((Conf, Bulk)),
     Psync((Bulk, Bulk)),
     FullResync((Bulk, Bulk)),
-    Wait((Bulk, Bulk)),
+    Wait((usize, usize)),
 }
 
 macro_rules! respcmd {
@@ -51,8 +51,8 @@ impl RESPCmd {
         }
     }
 
-    pub fn as_bytes(self) -> BytesMut {
-        self.to_command().as_bytes()
+    pub fn as_bytes(self) -> Bytes {
+        self.to_command().as_bytes().freeze()
     }
 
     fn handle_replconf(conf: Conf, bulk: Bulk) -> RESPType {
@@ -199,14 +199,17 @@ impl RESPCmd {
         Ok((repl_id, offset))
     }
 
-    fn parse_wait(mut parts: impl Iterator<Item = RESPType>) -> Result<(Bulk, Bulk)> {
-        let Some(RESPType::Bulk(Some(num_replicas))) = parts.next() else {
+    fn parse_wait(mut parts: impl Iterator<Item = RESPType>) -> Result<(usize, usize)> {
+        let Some(RESPType::Bulk(Some(mut num_replicas))) = parts.next() else {
             bail!("Wait requires num_replicas");
         };
 
-        let Some(RESPType::Bulk(Some(timeout))) = parts.next() else {
+        let Some(RESPType::Bulk(Some(mut timeout))) = parts.next() else {
             bail!("Wait requires timeout");
         };
+
+        let num_replicas = RESPType::parse_uinteger(&mut num_replicas.data)?;
+        let timeout = RESPType::parse_uinteger(&mut timeout.data)?;
 
         Ok((num_replicas, timeout))
     }

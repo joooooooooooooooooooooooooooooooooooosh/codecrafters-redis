@@ -1,9 +1,12 @@
-use anyhow::Result;
+use anyhow::{bail, Result};
 use bytes::Bytes;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{tcp::OwnedReadHalf, TcpListener, TcpStream},
-    sync::mpsc::{self, UnboundedSender},
+    sync::{
+        broadcast::{self, error::RecvError},
+        mpsc::{self, UnboundedSender},
+    },
 };
 
 use crate::{
@@ -61,36 +64,53 @@ pub async fn master_handle_connection(
     db: Db,
     config: Config,
 ) -> Result<()> {
-    let mut buf = [0; 1024]; // TODO: can we read straight into Bytes
+    let (bx, mut rx) = broadcast::channel(16);
+    let bx2 = bx.clone();
+
+    tokio::spawn(async move {
+        let mut buf = [0; 1024];
+        loop {
+            let len = reader.read(&mut buf).await.expect("problem reading");
+            if len == 0 {
+                continue;
+            }
+
+            let buf = Bytes::copy_from_slice(&buf[..len]);
+            dbg!("recieved", &buf);
+            bx.send(buf).expect("problem sending");
+        }
+    });
 
     loop {
-        let len = reader.read(&mut buf).await?;
-        if len == 0 {
-            continue;
-        }
+        let mut buf = match rx.recv().await {
+            Ok(b) => b,
+            Err(RecvError::Lagged(n)) => bail!("missed {n} commands"),
+            Err(_) => break Ok(()),
+        };
 
-        let mut buf = Bytes::copy_from_slice(&buf[..len]);
         while let Ok((cmd, len)) = RESPType::parse(&mut buf) {
-            dbg!(&cmd);
-
             let cmd = RESPCmd::parse(cmd)?;
             match cmd {
                 RESPCmd::Set(_) => {
-                    for replica in config.write().await.replicas.iter_mut() {
-                        replica.send(cmd.clone().as_bytes().freeze())?;
+                    for (replica, _, _) in config.write().await.replicas.iter_mut() {
+                        replica.send(cmd.clone().as_bytes())?;
                     }
                 }
                 _ => {}
             }
 
-            let resp = work::handle_command_master(cmd, db.clone(), config.clone(), &tx).await?;
-            tx.send(resp.as_bytes().freeze())?;
+            if let Some(resp) =
+                work::handle_command_master(cmd, db.clone(), config.clone(), &tx, &bx2).await?
+            {
+                tx.send(resp.as_bytes().freeze())?;
+            };
+
             config.write().await.offset += len;
         }
     }
 }
 
-pub async fn replica_handle_connection<'a>(
+pub async fn replica_handle_connection(
     mut stream: TcpStream,
     db: Db,
     config: Config,
@@ -106,8 +126,10 @@ pub async fn replica_handle_connection<'a>(
         let mut buf = Bytes::copy_from_slice(&buf[..len]);
         while let Ok((cmd, len)) = RESPType::parse(&mut buf) {
             let cmd = RESPCmd::parse(cmd)?;
-            let resp = work::handle_command(cmd, db.clone(), config.clone()).await?;
-            stream.write_all(&resp.as_bytes()).await?;
+            if let Some(resp) = work::handle_command(cmd, db.clone(), config.clone()).await? {
+                stream.write_all(&resp.as_bytes()).await?;
+            }
+
             config.write().await.offset += len;
         }
     }

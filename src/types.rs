@@ -1,6 +1,6 @@
 use bytes::Bytes;
 use std::{collections::HashMap, env::args, fmt::Display, io::Read, sync::Arc, time::SystemTime};
-use tokio::sync::{mpsc::UnboundedSender, Mutex, RwLock};
+use tokio::sync::{broadcast::Receiver, mpsc::UnboundedSender, Mutex, RwLock};
 
 pub type Db = Arc<Mutex<HashMap<Bulk, Entry>>>;
 
@@ -17,7 +17,7 @@ pub const ERROR: u8 = b'-';
 pub struct _Config {
     pub port: String,
     pub replica_of: Option<(String, String)>,
-    pub replicas: Vec<UnboundedSender<Bytes>>,
+    pub replicas: Vec<(UnboundedSender<Bytes>, Receiver<Bytes>, usize)>,
     pub offset: usize,
 }
 pub type Config = Arc<RwLock<_Config>>;

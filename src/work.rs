@@ -1,11 +1,17 @@
 use anyhow::Result;
 use bytes::Bytes;
-use std::time::SystemTime;
+use std::{
+    ops::AddAssign,
+    sync::Arc,
+    time::{Duration, SystemTime},
+};
 use tokio::{
     fs::File,
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
-    sync::mpsc::UnboundedSender,
+    sync::{broadcast::Sender, mpsc::UnboundedSender, RwLock},
+    task::JoinSet,
+    time,
 };
 
 use crate::{
@@ -22,32 +28,104 @@ pub async fn handle_command_master(
     db: Db,
     config: Config,
     tx: &UnboundedSender<Bytes>,
-) -> Result<RESPType> {
-    Ok(match cmd {
-        RESPCmd::ReplConf((conf, arg)) => handle_replconf(conf, arg, config, tx).await?,
-        RESPCmd::Psync((id, offset)) => handle_psync(id, offset).await?,
-        _ => handle_command(cmd, db, config).await?,
+    bx: &Sender<Bytes>,
+) -> Result<Option<RESPType>> {
+    Ok(Some(match cmd {
+        RESPCmd::ReplConf((conf, arg)) => handle_replconf(conf, arg, config, tx, bx).await?,
+        RESPCmd::Psync((id, offset)) => handle_psync(id, offset).await?.into(),
+        RESPCmd::Wait((num_replicas, timeout)) => {
+            handle_wait(num_replicas, timeout, config).await.into()
+        }
+        _ => handle_command(cmd, db, config).await?.into(),
     })
+    .flatten())
 }
 
-pub async fn handle_command(cmd: RESPCmd, db: Db, config: Config) -> Result<RESPType> {
-    Ok(match cmd {
-        RESPCmd::Echo(echo) => RESPType::Bulk(Some(echo)),
-        RESPCmd::Ping => RESPType::String(String::from("PONG")),
-        RESPCmd::Set((key, val, timeout)) => handle_set(key, val, timeout, db).await,
-        RESPCmd::Get(key) => handle_get(key, db).await,
-        RESPCmd::Info(topic) => handle_info(topic, config).await,
+pub async fn handle_command(cmd: RESPCmd, db: Db, config: Config) -> Result<Option<RESPType>> {
+    Ok(Some(match cmd {
+        RESPCmd::Echo(echo) => RESPType::Bulk(Some(echo)).into(),
+        RESPCmd::Ping => RESPType::String(String::from("PONG")).into(),
+        RESPCmd::Set((key, val, timeout)) => handle_set(key, val, timeout, db).await.into(),
+        RESPCmd::Get(key) => handle_get(key, db).await.into(),
+        RESPCmd::Info(topic) => handle_info(topic, config).await.into(),
         RESPCmd::ReplConf((c @ Conf::GetAck, arg)) => {
             handle_replconf_replica(c, arg, config).await?
         }
         RESPCmd::FullResync(_) => todo!(),
-        RESPCmd::Wait((num_replicas, timeout)) => handle_wait(num_replicas, timeout, config).await,
         _ => unimplemented!(), // shouldn't be needed on a replica
     })
+    .flatten())
 }
 
-async fn handle_wait(_num_replicas: Bulk, _timeout: Bulk, config: Config) -> RESPType {
-    RESPType::Integer(config.read().await.replicas.len() as isize)
+async fn handle_wait(min_replicas: usize, timeout: usize, config: Config) -> RESPType {
+    async fn ping_replicas(config: Config, num_responses: Arc<RwLock<usize>>, min_replicas: usize) {
+        let master_offset = config.read().await.offset;
+
+        let already_acked = config
+            .read()
+            .await
+            .replicas
+            .iter()
+            .filter(|(_, _, offset)| offset >= &master_offset)
+            .count();
+        if already_acked >= min_replicas {
+            num_responses.write().await.add_assign(already_acked);
+            return;
+        }
+
+        let mut set = JoinSet::new();
+        for (replica, receiver, offset) in config.read().await.replicas.iter() {
+            if offset >= &master_offset {
+                continue;
+            }
+
+            let num_responses = num_responses.clone();
+            let replica = replica.clone();
+            let mut receiver = receiver.resubscribe();
+
+            set.spawn(async move {
+                _ = replica.send(dbg!(
+                    RESPCmd::ReplConf((Conf::GetAck, bulk!("*"))).as_bytes()
+                ));
+                loop {
+                    match dbg!(receiver.recv().await) {
+                        Ok(mut resp) => match RESPType::parse(&mut resp) {
+                            Ok((cmd, _)) => match RESPCmd::parse(cmd) {
+                                Ok(RESPCmd::ReplConf((Conf::Ack, _))) => {
+                                    num_responses.write().await.add_assign(1);
+                                    break;
+                                }
+                                _ => continue,
+                            },
+                            Err(_) => continue,
+                        },
+                        Err(_) => continue,
+                    }
+                }
+            });
+        }
+
+        while set.join_next().await.is_some() {
+            if num_responses.read().await.clone() >= min_replicas {
+                set.abort_all()
+            }
+        }
+    }
+
+    let num_responses = Arc::new(RwLock::const_new(0));
+    if timeout == 0 {
+        ping_replicas(config, num_responses.clone(), min_replicas).await;
+    } else {
+        let sleep = time::sleep(Duration::from_millis(timeout as u64));
+
+        tokio::select! {
+            _ = ping_replicas(config, num_responses.clone(), min_replicas) => {}
+            _ = sleep => {}
+        };
+    }
+
+    let resp = num_responses.read().await.clone();
+    RESPType::Integer(resp as isize)
 }
 
 async fn handle_replconf(
@@ -55,27 +133,37 @@ async fn handle_replconf(
     arg: Bulk,
     config: Config,
     tx: &UnboundedSender<Bytes>,
-) -> Result<RESPType> {
+    bx: &Sender<Bytes>,
+) -> Result<Option<RESPType>> {
     match conf {
         Conf::ListeningPort => {
-            config.write().await.replicas.push(tx.clone());
-            Ok(RESPType::String(String::from("OK")))
+            config
+                .write()
+                .await
+                .replicas
+                .push((tx.clone(), bx.subscribe(), 0));
+            Ok(RESPType::String(String::from("OK")).into())
         }
         other => handle_replconf_replica(other, arg, config).await,
     }
 }
 
-async fn handle_replconf_replica(conf: Conf, _arg: Bulk, config: Config) -> Result<RESPType> {
-    match conf {
-        Conf::Capa => Ok(RESPType::String(String::from("OK"))),
-        Conf::GetAck => Ok(RESPCmd::ReplConf((
+async fn handle_replconf_replica(
+    conf: Conf,
+    _arg: Bulk,
+    config: Config,
+) -> Result<Option<RESPType>> {
+    Ok(match conf {
+        Conf::Capa => RESPType::String(String::from("OK")).into(),
+        Conf::GetAck => RESPCmd::ReplConf((
             Conf::Ack,
             bulk!(config.read().await.offset.to_string().as_str()),
         ))
-        .to_command()),
-        Conf::Ack => todo!(),
+        .to_command()
+        .into(),
+        Conf::Ack => None,
         Conf::ListeningPort => unreachable!(),
-    }
+    })
 }
 
 async fn handle_set(key: Bulk, val: Bulk, timeout: Option<SystemTime>, db: Db) -> RESPType {
@@ -99,28 +187,31 @@ async fn handle_get(key: Bulk, db: Db) -> RESPType {
     RESPType::Bulk(val)
 }
 
-async fn handle_info(topic: Option<Bulk>, args: Config) -> RESPType {
+async fn handle_info(topic: Option<Bulk>, config: Config) -> RESPType {
     // TODO: handle INFO with no topic (all sections)
     let Some(topic) = topic else { unimplemented!() };
 
     RESPType::Bulk(Some(match topic.as_bytes() {
-        b"replication" => info_replication(args).await,
+        b"replication" => info_replication(config).await,
         _ => unimplemented!(),
     }))
 }
 
-async fn info_replication(args: Config) -> Bulk {
-    let role = match args.read().await.is_master() {
+async fn info_replication(config: Config) -> Bulk {
+    let role = match config.read().await.is_master() {
         true => "master",
         false => "slave",
     };
+
+    // TODO: fetch master offset if this is a replica
     Bulk::from(
         format!(
             "\
 role:{role}
 master_replid:{REPLICATION_ID}
-master_repl_offset:0
-"
+master_repl_offset:{}
+",
+            config.read().await.offset
         )
         .as_str(),
     )
@@ -182,10 +273,11 @@ pub async fn connect_to_master(host: String, port: String, config: Config, db: D
     // TODO: reduce hacky duplication
     while let Ok((cmd, len)) = RESPType::parse(&mut buff) {
         let cmd = RESPCmd::parse(cmd)?;
-        let resp = handle_command(cmd.clone(), db.clone(), config.clone()).await?;
-        match cmd {
-            RESPCmd::ReplConf((Conf::GetAck, _)) => conn.write_all(&resp.as_bytes()).await?,
-            _ => {}
+        if let Some(resp) = handle_command(cmd.clone(), db.clone(), config.clone()).await? {
+            match cmd {
+                RESPCmd::ReplConf((Conf::GetAck, _)) => conn.write_all(&resp.as_bytes()).await?,
+                _ => {}
+            }
         }
 
         config.write().await.offset += len;
@@ -200,10 +292,13 @@ pub async fn connect_to_master(host: String, port: String, config: Config, db: D
         let mut buf = Bytes::copy_from_slice(&buf[..len]);
         while let Ok((cmd, len)) = RESPType::parse(&mut buf) {
             let cmd = RESPCmd::parse(cmd)?;
-            let resp = handle_command(cmd.clone(), db.clone(), config.clone()).await?;
-            match cmd {
-                RESPCmd::ReplConf((Conf::GetAck, _)) => conn.write_all(&resp.as_bytes()).await?,
-                _ => {}
+            if let Some(resp) = handle_command(cmd.clone(), db.clone(), config.clone()).await? {
+                match cmd {
+                    RESPCmd::ReplConf((Conf::GetAck, _)) => {
+                        conn.write_all(&resp.as_bytes()).await?
+                    }
+                    _ => {}
+                }
             }
 
             config.write().await.offset += len;

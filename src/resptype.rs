@@ -136,6 +136,7 @@ impl RESPType {
             total *= 10;
             total += buf.get_u8() as isize - 48
         }
+        Self::parse_crlf(buf)?;
 
         Ok(sign * total)
     }
