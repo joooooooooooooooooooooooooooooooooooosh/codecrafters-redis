@@ -70,24 +70,20 @@ pub async fn master_handle_connection(
         }
 
         let mut buf = Bytes::copy_from_slice(&buf[..len]);
-        dbg!(&buf);
-        let cmd = RESPCmd::parse(RESPType::parse(&mut buf)?)?;
-        dbg!(&cmd);
-        match cmd {
-            RESPCmd::Set(_) => {
-                for replica in config.write().await.replicas.iter_mut() {
-                    replica.send(dbg!(cmd.clone().as_bytes().freeze()))?;
-                    dbg!("alsdkfj");
+        while let Ok(cmd) = RESPType::parse(&mut buf) {
+            let cmd = RESPCmd::parse(cmd)?;
+            match cmd {
+                RESPCmd::Set(_) => {
+                    for replica in config.write().await.replicas.iter_mut() {
+                        replica.send(cmd.clone().as_bytes().freeze())?;
+                    }
                 }
+                _ => {}
             }
-            _ => {}
-        }
 
-        dbg!("alsdkfj");
-        let resp = work::handle_command_master(cmd, db.clone(), config.clone(), &tx).await?;
-        dbg!("alsdkfj");
-        tx.send(resp.as_bytes().freeze())?;
-        dbg!("alsdkfj");
+            let resp = work::handle_command_master(cmd, db.clone(), config.clone(), &tx).await?;
+            tx.send(resp.as_bytes().freeze())?;
+        }
     }
 }
 

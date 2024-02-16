@@ -88,6 +88,10 @@ impl RESPType {
 
 impl RESPType {
     pub fn parse(buf: &mut Bytes) -> Result<Self> {
+        if buf.is_empty() {
+            bail!("empty buffer");
+        }
+
         let typ = buf.get_u8();
         Ok(match typ {
             INTEGER => Self::Integer(Self::parse_integer(buf)?),
