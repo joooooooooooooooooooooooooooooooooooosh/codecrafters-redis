@@ -7,13 +7,13 @@ use std::{
 
 use crate::{bulk, resptype::RESPType, types::Bulk};
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum Conf {
     ListeningPort,
     Capa,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum RESPCmd {
     Echo(Bulk),
     Ping,
@@ -39,7 +39,7 @@ impl RESPCmd {
             RESPCmd::Echo(_) => todo!(),
             RESPCmd::Ping => respcmd!(bulk!("PING")),
             RESPCmd::Get(_) => todo!(),
-            RESPCmd::Set(_) => todo!(),
+            RESPCmd::Set((key, val, expiry)) => Self::handle_set(key, val, expiry),
             RESPCmd::Info(_) => todo!(),
             RESPCmd::ReplConf((conf, bulk)) => Self::handle_replconf(conf, bulk),
             RESPCmd::Psync((id, offset)) => respcmd!(bulk!("PSYNC") id offset),
@@ -60,6 +60,29 @@ impl RESPCmd {
 
     fn handle_full_resync(id: Bulk, offset: Bulk) -> RESPType {
         RESPType::String(format!("FULLRESYNC {id} {offset}"))
+    }
+
+    fn handle_set(key: Bulk, val: Bulk, expiry: Option<SystemTime>) -> RESPType {
+        let mut array = vec![
+            RESPType::Bulk(Some(bulk!("SET"))),
+            RESPType::Bulk(Some(key)),
+            RESPType::Bulk(Some(val)),
+        ];
+
+        if let Some(expiry) = expiry {
+            let Ok(timeout) = expiry.duration_since(SystemTime::now()) else {
+                // key has expired, do nothing
+                // TODO: actually do nothing
+                return respcmd!(bulk!("PING"));
+            };
+            array.push(RESPType::Bulk(Some(bulk!("PX"))));
+            array.push(RESPType::Bulk(Some(bulk!(timeout
+                .as_millis()
+                .to_string()
+                .as_str()))));
+        };
+
+        RESPType::Array(array)
     }
 }
 
