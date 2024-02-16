@@ -121,7 +121,7 @@ async fn handle_psync(_id: Bulk, _offset: Bulk) -> Result<RESPType> {
     ]))
 }
 
-pub async fn handshake(host: String, port: String, config: Config, db: Db) -> Result<()> {
+pub async fn connect_to_master(host: String, port: String, config: Config, db: Db) -> Result<()> {
     let mut buf = [0; 1024]; // TODO: can we read straight into Bytes
     let mut conn = TcpStream::connect(format!("{host}:{port}")).await?;
 
@@ -144,8 +144,18 @@ pub async fn handshake(host: String, port: String, config: Config, db: Db) -> Re
     conn.write_all(&RESPCmd::Psync((Bulk::from("?"), Bulk::from("-1"))).as_bytes())
         .await?;
 
-    let _ = conn.read(&mut buf).await?; // TODO: parse fullresync (simple string)
-                                        // TODO: parse empty RDB file
+    let _ = conn.read(&mut buf).await?;
+
+    let mut buff = Bytes::copy_from_slice(&buf);
+    let _full_resync = RESPType::parse(&mut buff)?;
+    let _rdb_file = RESPType::parse(&mut buff)?;
+    // TODO: verify full resync and rdb file
+
+    // TODO: reduce hacky duplication
+    while let Ok(cmd) = RESPType::parse(&mut buff) {
+        let cmd = RESPCmd::parse(cmd)?;
+        handle_command(cmd, db.clone(), config.clone()).await?;
+    }
 
     loop {
         let len = conn.read(&mut buf).await?;
@@ -154,8 +164,9 @@ pub async fn handshake(host: String, port: String, config: Config, db: Db) -> Re
         }
 
         let mut buf = Bytes::copy_from_slice(&buf);
-        let cmd = RESPCmd::parse(RESPType::parse(&mut buf)?)?;
-
-        handle_command(cmd, db.clone(), config.clone()).await?;
+        while let Ok(cmd) = RESPType::parse(&mut buf) {
+            let cmd = RESPCmd::parse(cmd)?;
+            handle_command(cmd, db.clone(), config.clone()).await?;
+        }
     }
 }

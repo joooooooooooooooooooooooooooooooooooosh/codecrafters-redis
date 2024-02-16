@@ -101,9 +101,11 @@ pub async fn replica_handle_connection<'a>(
         }
 
         let mut buf = Bytes::copy_from_slice(&buf);
-        let cmd = RESPCmd::parse(RESPType::parse(&mut buf)?)?;
+        while let Ok(cmd) = RESPType::parse(&mut buf) {
+            let cmd = RESPCmd::parse(cmd)?;
 
-        let resp = work::handle_command(cmd, db.clone(), config.clone()).await?;
-        stream.write_all(&resp.as_bytes()).await?;
+            let resp = work::handle_command(cmd, db.clone(), config.clone()).await?;
+            stream.write_all(&resp.as_bytes()).await?;
+        }
     }
 }
