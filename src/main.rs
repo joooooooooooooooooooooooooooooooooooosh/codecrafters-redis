@@ -11,7 +11,7 @@ pub mod work;
 use crate::{
     connection::{master_listen, replica_listen},
     types::{parse_args, Bulk, Entry},
-    work::handshake,
+    work::connect_to_master,
 };
 
 #[tokio::main]
@@ -25,7 +25,7 @@ async fn main() -> Result<()> {
         let config = config.clone();
         let host = host.clone();
         let port = port.clone();
-        tokio::spawn(handshake(host, port, config, db.clone()));
+        tokio::spawn(connect_to_master(host, port, config, db.clone()));
     };
 
     let is_master = config.read().await.is_master();

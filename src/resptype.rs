@@ -96,7 +96,7 @@ impl RESPType {
         Ok(match typ {
             INTEGER => Self::Integer(Self::parse_integer(buf)?),
             STRING => Self::String(Self::parse_string(buf)?),
-            BULK => Self::Bulk(Self::parse_bulk(buf)?),
+            BULK => Self::parse_bulk(buf)?,
             ARRAY => Self::Array(Self::parse_array(buf)?),
             ERROR => Self::Error(Self::parse_error(buf)?),
             _ => bail!("Invalid type marker"),
@@ -141,19 +141,19 @@ impl RESPType {
         Ok(s)
     }
 
-    fn parse_bulk(buf: &mut Bytes) -> Result<Option<Bulk>> {
-        // TODO: allow parsing RDB file (no ending CRLF)
+    fn parse_bulk(buf: &mut Bytes) -> Result<Self> {
         if &buf[..4] == NIL_BULK {
-            return Ok(None);
+            return Ok(Self::Bulk(None));
         }
 
         let len = Self::parse_uinteger(buf)?;
         Self::parse_crlf(buf)?;
 
         let data = buf.split_to(len);
-        Self::parse_crlf(buf)?;
-
-        Ok(Some(Bulk { len, data }))
+        Ok(match Self::parse_crlf(buf) {
+            Ok(_) => RESPType::Bulk(Some(Bulk { len, data })),
+            Err(_) => RESPType::RDBFile(data.to_vec()),
+        })
     }
 
     fn parse_error(_buf: &mut Bytes) -> Result<String> {
@@ -161,10 +161,14 @@ impl RESPType {
     }
 
     fn parse_crlf(buf: &mut Bytes) -> Result<()> {
-        let crlf = buf.get_u16();
-        if crlf != u16::from_be_bytes(*b"\r\n") {
-            bail!("Missing CRLF")
+        if buf.len() < 2 {
+            bail!("Empty buffer");
         }
+
+        if &buf[..2] != b"\r\n" {
+            bail!("Missing CRLF");
+        }
+        buf.get_u16();
 
         Ok(())
     }
