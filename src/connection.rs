@@ -71,6 +71,8 @@ pub async fn master_handle_connection(
 
         let mut buf = Bytes::copy_from_slice(&buf[..len]);
         while let Ok((cmd, len)) = RESPType::parse(&mut buf) {
+            dbg!(&cmd);
+
             let cmd = RESPCmd::parse(cmd)?;
             match cmd {
                 RESPCmd::Set(_) => {
