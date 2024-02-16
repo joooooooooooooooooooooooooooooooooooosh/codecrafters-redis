@@ -70,7 +70,7 @@ pub async fn master_handle_connection(
         }
 
         let mut buf = Bytes::copy_from_slice(&buf[..len]);
-        while let Ok(cmd) = RESPType::parse(&mut buf) {
+        while let Ok((cmd, len)) = RESPType::parse(&mut buf) {
             let cmd = RESPCmd::parse(cmd)?;
             match cmd {
                 RESPCmd::Set(_) => {
@@ -83,6 +83,7 @@ pub async fn master_handle_connection(
 
             let resp = work::handle_command_master(cmd, db.clone(), config.clone(), &tx).await?;
             tx.send(resp.as_bytes().freeze())?;
+            config.write().await.offset += len;
         }
     }
 }
@@ -101,11 +102,11 @@ pub async fn replica_handle_connection<'a>(
         }
 
         let mut buf = Bytes::copy_from_slice(&buf[..len]);
-        while let Ok(cmd) = RESPType::parse(&mut buf) {
+        while let Ok((cmd, len)) = RESPType::parse(&mut buf) {
             let cmd = RESPCmd::parse(cmd)?;
-
             let resp = work::handle_command(cmd, db.clone(), config.clone()).await?;
             stream.write_all(&resp.as_bytes()).await?;
+            config.write().await.offset += len;
         }
     }
 }

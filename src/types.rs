@@ -13,10 +13,12 @@ pub const BULK: u8 = b'$';
 pub const ARRAY: u8 = b'*';
 pub const ERROR: u8 = b'-';
 
+#[derive(Default)]
 pub struct _Config {
     pub port: String,
     pub replica_of: Option<(String, String)>,
     pub replicas: Vec<UnboundedSender<Bytes>>,
+    pub offset: usize,
 }
 pub type Config = Arc<RwLock<_Config>>;
 
@@ -37,7 +39,7 @@ pub fn parse_args() -> Config {
     Arc::new(RwLock::new(_Config {
         port,
         replica_of,
-        replicas: Vec::new(),
+        ..Default::default()
     }))
 }
 

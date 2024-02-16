@@ -87,20 +87,24 @@ impl RESPType {
 }
 
 impl RESPType {
-    pub fn parse(buf: &mut Bytes) -> Result<Self> {
+    pub fn parse(buf: &mut Bytes) -> Result<(Self, usize)> {
         if buf.is_empty() {
             bail!("empty buffer");
         }
 
+        let original_len = buf.len();
         let typ = buf.get_u8();
-        Ok(match typ {
-            INTEGER => Self::Integer(Self::parse_integer(buf)?),
-            STRING => Self::String(Self::parse_string(buf)?),
-            BULK => Self::parse_bulk(buf)?,
-            ARRAY => Self::Array(Self::parse_array(buf)?),
-            ERROR => Self::Error(Self::parse_error(buf)?),
-            _ => bail!("Invalid type marker"),
-        })
+        Ok((
+            match typ {
+                INTEGER => Self::Integer(Self::parse_integer(buf)?),
+                STRING => Self::String(Self::parse_string(buf)?),
+                BULK => Self::parse_bulk(buf)?,
+                ARRAY => Self::Array(Self::parse_array(buf)?),
+                ERROR => Self::Error(Self::parse_error(buf)?),
+                _ => bail!("Invalid type marker"),
+            },
+            original_len - buf.len(),
+        ))
     }
 
     fn parse_integer(_buf: &mut Bytes) -> Result<isize> {
@@ -124,7 +128,8 @@ impl RESPType {
 
         let mut vec = Vec::with_capacity(len);
         for _ in 0..len {
-            vec.push(Self::parse(buf)?);
+            let (cmd, _) = Self::parse(buf)?;
+            vec.push(cmd);
         }
 
         Ok(vec)

@@ -37,7 +37,9 @@ pub async fn handle_command(cmd: RESPCmd, db: Db, config: Config) -> Result<RESP
         RESPCmd::Set((key, val, timeout)) => handle_set(key, val, timeout, db).await,
         RESPCmd::Get(key) => handle_get(key, db).await,
         RESPCmd::Info(topic) => handle_info(topic, config).await,
-        RESPCmd::ReplConf((c @ Conf::GetAck, arg)) => handle_replconf_replica(c, arg)?,
+        RESPCmd::ReplConf((c @ Conf::GetAck, arg)) => {
+            handle_replconf_replica(c, arg, config).await?
+        }
         RESPCmd::FullResync(_) => todo!(),
         _ => unimplemented!(), // shouldn't be needed on a replica
     })
@@ -54,14 +56,18 @@ async fn handle_replconf(
             config.write().await.replicas.push(tx.clone());
             Ok(RESPType::String(String::from("OK")))
         }
-        other => handle_replconf_replica(other, arg),
+        other => handle_replconf_replica(other, arg, config).await,
     }
 }
 
-fn handle_replconf_replica(conf: Conf, _arg: Bulk) -> Result<RESPType> {
+async fn handle_replconf_replica(conf: Conf, _arg: Bulk, config: Config) -> Result<RESPType> {
     match conf {
         Conf::Capa => Ok(RESPType::String(String::from("OK"))),
-        Conf::GetAck => Ok(RESPCmd::ReplConf((Conf::Ack, bulk!("0"))).to_command()),
+        Conf::GetAck => Ok(RESPCmd::ReplConf((
+            Conf::Ack,
+            bulk!(config.read().await.offset.to_string().as_str()),
+        ))
+        .to_command()),
         Conf::Ack => todo!(),
         Conf::ListeningPort => unreachable!(),
     }
@@ -146,7 +152,6 @@ pub async fn connect_to_master(host: String, port: String, config: Config, db: D
     conn.write_all(&RESPCmd::ReplConf((Conf::Capa, Bulk::from("psync2"))).as_bytes())
         .await?;
 
-    
     while let 0 = conn.read(&mut buf).await? {} // TODO: check OK
 
     conn.write_all(&RESPCmd::Psync((Bulk::from("?"), Bulk::from("-1"))).as_bytes())
@@ -170,13 +175,15 @@ pub async fn connect_to_master(host: String, port: String, config: Config, db: D
     // TODO: verify full resync and rdb file
 
     // TODO: reduce hacky duplication
-    while let Ok(cmd) = RESPType::parse(&mut buff) {
+    while let Ok((cmd, len)) = RESPType::parse(&mut buff) {
         let cmd = RESPCmd::parse(cmd)?;
         let resp = handle_command(cmd.clone(), db.clone(), config.clone()).await?;
         match cmd {
             RESPCmd::ReplConf((Conf::GetAck, _)) => conn.write_all(&resp.as_bytes()).await?,
             _ => {}
         }
+
+        config.write().await.offset += len;
     }
 
     loop {
@@ -186,13 +193,15 @@ pub async fn connect_to_master(host: String, port: String, config: Config, db: D
         }
 
         let mut buf = Bytes::copy_from_slice(&buf[..len]);
-        while let Ok(cmd) = RESPType::parse(&mut buf) {
+        while let Ok((cmd, len)) = RESPType::parse(&mut buf) {
             let cmd = RESPCmd::parse(cmd)?;
             let resp = handle_command(cmd.clone(), db.clone(), config.clone()).await?;
             match cmd {
                 RESPCmd::ReplConf((Conf::GetAck, _)) => conn.write_all(&resp.as_bytes()).await?,
                 _ => {}
             }
+
+            config.write().await.offset += len;
         }
     }
 }
