@@ -1,7 +1,9 @@
-use std::{collections::HashMap, env::args, fmt::Display, io::Read, sync::Arc, time::SystemTime};
-
 use bytes::Bytes;
-use tokio::sync::Mutex;
+use std::{
+    collections::HashMap, env::args, fmt::Display, io::Read, net::TcpStream, sync::Arc,
+    time::SystemTime,
+};
+use tokio::sync::{Mutex, RwLock};
 
 pub type Db = Arc<Mutex<HashMap<Bulk, Entry>>>;
 
@@ -14,13 +16,14 @@ pub const BULK: u8 = b'$';
 pub const ARRAY: u8 = b'*';
 pub const ERROR: u8 = b'-';
 
-pub struct _Args {
+pub struct _Config {
     pub port: String,
     pub replica_of: Option<(String, String)>,
+    pub replicas: Vec<TcpStream>,
 }
-pub type Args = Arc<_Args>;
+pub type Config = Arc<RwLock<_Config>>;
 
-pub fn parse_args() -> Args {
+pub fn parse_args() -> Config {
     let port = args()
         .skip_while(|arg| arg != "--port")
         .skip(1)
@@ -35,7 +38,17 @@ pub fn parse_args() -> Args {
         None
     };
 
-    Arc::new(_Args { port, replica_of })
+    Arc::new(RwLock::new(_Config {
+        port,
+        replica_of,
+        replicas: Vec::new(),
+    }))
+}
+
+impl _Config {
+    pub fn is_master(&self) -> bool {
+        self.replica_of.is_none()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]

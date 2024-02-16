@@ -73,7 +73,7 @@ impl RESPType {
         resp.put_slice(CRLF);
         resp.put_slice(f.as_slice());
 
-        dbg!(resp)
+        resp
     }
 
     fn ser_multi(m: Vec<Self>) -> BytesMut {

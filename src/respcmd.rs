@@ -7,11 +7,13 @@ use std::{
 
 use crate::{bulk, resptype::RESPType, types::Bulk};
 
+#[derive(Debug)]
 pub enum Conf {
     ListeningPort,
     Capa,
 }
 
+#[derive(Debug)]
 pub enum RESPCmd {
     Echo(Bulk),
     Ping,
