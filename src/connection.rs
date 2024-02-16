@@ -100,7 +100,7 @@ pub async fn replica_handle_connection<'a>(
             continue;
         }
 
-        let mut buf = Bytes::copy_from_slice(&buf);
+        let mut buf = Bytes::copy_from_slice(&buf[..len]);
         while let Ok(cmd) = RESPType::parse(&mut buf) {
             let cmd = RESPCmd::parse(cmd)?;
 

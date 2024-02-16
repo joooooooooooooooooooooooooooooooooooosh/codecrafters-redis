@@ -37,6 +37,7 @@ pub async fn handle_command(cmd: RESPCmd, db: Db, config: Config) -> Result<RESP
         RESPCmd::Set((key, val, timeout)) => handle_set(key, val, timeout, db).await,
         RESPCmd::Get(key) => handle_get(key, db).await,
         RESPCmd::Info(topic) => handle_info(topic, config).await,
+        RESPCmd::ReplConf((c @ Conf::GetAck, arg)) => handle_replconf_replica(c, arg)?,
         RESPCmd::FullResync(_) => todo!(),
         _ => unimplemented!(), // shouldn't be needed on a replica
     })
@@ -44,20 +45,26 @@ pub async fn handle_command(cmd: RESPCmd, db: Db, config: Config) -> Result<RESP
 
 async fn handle_replconf(
     conf: Conf,
-    _arg: Bulk,
+    arg: Bulk,
     config: Config,
     tx: &UnboundedSender<Bytes>,
 ) -> Result<RESPType> {
     match conf {
         Conf::ListeningPort => {
             config.write().await.replicas.push(tx.clone());
+            Ok(RESPType::String(String::from("OK")))
         }
-        Conf::Capa => {
-            // TODO: handle properly
-        }
+        other => handle_replconf_replica(other, arg),
     }
+}
 
-    Ok(RESPType::String(String::from("OK")))
+fn handle_replconf_replica(conf: Conf, _arg: Bulk) -> Result<RESPType> {
+    match conf {
+        Conf::Capa => Ok(RESPType::String(String::from("OK"))),
+        Conf::GetAck => Ok(RESPCmd::ReplConf((Conf::Ack, bulk!("0"))).to_command()),
+        Conf::Ack => todo!(),
+        Conf::ListeningPort => unreachable!(),
+    }
 }
 
 async fn handle_set(key: Bulk, val: Bulk, timeout: Option<SystemTime>, db: Db) -> RESPType {
@@ -127,34 +134,49 @@ pub async fn connect_to_master(host: String, port: String, config: Config, db: D
 
     conn.write_all(&RESPCmd::Ping.as_bytes()).await?;
 
-    let _ = conn.read(&mut buf).await?; // TODO: check PONG
+    while let 0 = conn.read(&mut buf).await? {} // TODO: check OK
 
     conn.write_all(
         &RESPCmd::ReplConf((Conf::ListeningPort, Bulk::from(&config.read().await.port))).as_bytes(),
     )
     .await?;
 
-    let _ = conn.read(&mut buf).await?; // TODO: check PONG
+    while let 0 = conn.read(&mut buf).await? {} // TODO: check OK
 
     conn.write_all(&RESPCmd::ReplConf((Conf::Capa, Bulk::from("psync2"))).as_bytes())
         .await?;
 
-    let _ = conn.read(&mut buf).await?; // TODO: check OK
+    
+    while let 0 = conn.read(&mut buf).await? {} // TODO: check OK
 
     conn.write_all(&RESPCmd::Psync((Bulk::from("?"), Bulk::from("-1"))).as_bytes())
         .await?;
 
-    let _ = conn.read(&mut buf).await?;
+    while let 0 = conn.read(&mut buf).await? {}
 
     let mut buff = Bytes::copy_from_slice(&buf);
     let _full_resync = RESPType::parse(&mut buff)?;
-    let _rdb_file = RESPType::parse(&mut buff)?;
+
+    // Recieve RDBFile
+    match RESPType::parse(&mut buff) {
+        Ok(_) => {}
+        Err(_) => {
+            while let 0 = conn.read(&mut buf).await? {}
+            let mut buff = Bytes::copy_from_slice(&buf);
+            RESPType::parse(&mut buff)?;
+        }
+    }
+
     // TODO: verify full resync and rdb file
 
     // TODO: reduce hacky duplication
     while let Ok(cmd) = RESPType::parse(&mut buff) {
         let cmd = RESPCmd::parse(cmd)?;
-        handle_command(cmd, db.clone(), config.clone()).await?;
+        let resp = handle_command(cmd.clone(), db.clone(), config.clone()).await?;
+        match cmd {
+            RESPCmd::ReplConf((Conf::GetAck, _)) => conn.write_all(&resp.as_bytes()).await?,
+            _ => {}
+        }
     }
 
     loop {
@@ -163,10 +185,14 @@ pub async fn connect_to_master(host: String, port: String, config: Config, db: D
             continue;
         }
 
-        let mut buf = Bytes::copy_from_slice(&buf);
+        let mut buf = Bytes::copy_from_slice(&buf[..len]);
         while let Ok(cmd) = RESPType::parse(&mut buf) {
             let cmd = RESPCmd::parse(cmd)?;
-            handle_command(cmd, db.clone(), config.clone()).await?;
+            let resp = handle_command(cmd.clone(), db.clone(), config.clone()).await?;
+            match cmd {
+                RESPCmd::ReplConf((Conf::GetAck, _)) => conn.write_all(&resp.as_bytes()).await?,
+                _ => {}
+            }
         }
     }
 }

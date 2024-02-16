@@ -11,6 +11,8 @@ use crate::{bulk, resptype::RESPType, types::Bulk};
 pub enum Conf {
     ListeningPort,
     Capa,
+    GetAck,
+    Ack,
 }
 
 #[derive(Clone, Debug)]
@@ -55,6 +57,8 @@ impl RESPCmd {
         respcmd!(bulk!("REPLCONF") bulk!(match conf {
             Conf::ListeningPort => "listening-port",
             Conf::Capa => "capa",
+            Conf::GetAck => "GETACK",
+            Conf::Ack => "ACK",
         }) bulk)
     }
 
@@ -171,6 +175,8 @@ impl RESPCmd {
         let conf = match conf.data.to_ascii_lowercase().as_slice() {
             b"listening-port" => Conf::ListeningPort,
             b"capa" => Conf::Capa,
+            b"getack" => Conf::GetAck,
+            b"ack" => Conf::Ack,
             _ => bail!("Invalid replconf argument"),
         };
 
