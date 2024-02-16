@@ -1,9 +1,6 @@
 use bytes::Bytes;
-use std::{
-    collections::HashMap, env::args, fmt::Display, io::Read, net::TcpStream, sync::Arc,
-    time::SystemTime,
-};
-use tokio::sync::{Mutex, RwLock};
+use std::{collections::HashMap, env::args, fmt::Display, io::Read, sync::Arc, time::SystemTime};
+use tokio::sync::{mpsc::UnboundedSender, Mutex, RwLock};
 
 pub type Db = Arc<Mutex<HashMap<Bulk, Entry>>>;
 
@@ -19,15 +16,14 @@ pub const ERROR: u8 = b'-';
 pub struct _Config {
     pub port: String,
     pub replica_of: Option<(String, String)>,
-    pub replicas: Vec<TcpStream>,
+    pub replicas: Vec<UnboundedSender<Bytes>>,
 }
 pub type Config = Arc<RwLock<_Config>>;
 
 pub fn parse_args() -> Config {
     let port = args()
         .skip_while(|arg| arg != "--port")
-        .skip(1)
-        .next()
+        .nth(1)
         .unwrap_or(String::from("6379"));
 
     let mut replica_iter = args().skip_while(|arg| arg != "--replicaof").skip(1);
