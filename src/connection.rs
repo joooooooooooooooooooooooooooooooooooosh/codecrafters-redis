@@ -76,7 +76,6 @@ pub async fn master_handle_connection(
             }
 
             let buf = Bytes::copy_from_slice(&buf[..len]);
-            dbg!("recieved", &buf);
             bx.send(buf).expect("problem sending");
         }
     });
@@ -85,7 +84,7 @@ pub async fn master_handle_connection(
         let mut buf = match rx.recv().await {
             Ok(b) => b,
             Err(RecvError::Lagged(n)) => bail!("missed {n} commands"),
-            Err(_) => break Ok(()),
+            e @ Err(_) => e?,
         };
 
         while let Ok((cmd, len)) = RESPType::parse(&mut buf) {
@@ -100,12 +99,18 @@ pub async fn master_handle_connection(
             }
 
             if let Some(resp) =
-                work::handle_command_master(cmd, db.clone(), config.clone(), &tx, &bx2).await?
+                work::handle_command_master(cmd.clone(), db.clone(), config.clone(), &tx, &bx2)
+                    .await?
             {
                 tx.send(resp.as_bytes().freeze())?;
             };
 
-            config.write().await.offset += len;
+            match cmd {
+                RESPCmd::Set(_) => {
+                    config.write().await.offset += len;
+                }
+                _ => {}
+            }
         }
     }
 }

@@ -32,7 +32,7 @@ pub async fn handle_command_master(
 ) -> Result<Option<RESPType>> {
     Ok(Some(match cmd {
         RESPCmd::ReplConf((conf, arg)) => handle_replconf(conf, arg, config, tx, bx).await?,
-        RESPCmd::Psync((id, offset)) => handle_psync(id, offset).await?.into(),
+        RESPCmd::Psync((id, offset)) => handle_psync(id, offset, config).await?.into(),
         RESPCmd::Wait((num_replicas, timeout)) => {
             handle_wait(num_replicas, timeout, config).await.into()
         }
@@ -68,8 +68,9 @@ async fn handle_wait(min_replicas: usize, timeout: usize, config: Config) -> RES
             .iter()
             .filter(|(_, _, offset)| offset >= &master_offset)
             .count();
+        num_responses.write().await.add_assign(already_acked);
+
         if already_acked >= min_replicas {
-            num_responses.write().await.add_assign(already_acked);
             return;
         }
 
@@ -84,11 +85,9 @@ async fn handle_wait(min_replicas: usize, timeout: usize, config: Config) -> RES
             let mut receiver = receiver.resubscribe();
 
             set.spawn(async move {
-                _ = replica.send(dbg!(
-                    RESPCmd::ReplConf((Conf::GetAck, bulk!("*"))).as_bytes()
-                ));
+                _ = replica.send(RESPCmd::ReplConf((Conf::GetAck, bulk!("*"))).as_bytes());
                 loop {
-                    match dbg!(receiver.recv().await) {
+                    match receiver.recv().await {
                         Ok(mut resp) => match RESPType::parse(&mut resp) {
                             Ok((cmd, _)) => match RESPCmd::parse(cmd) {
                                 Ok(RESPCmd::ReplConf((Conf::Ack, _))) => {
@@ -105,7 +104,8 @@ async fn handle_wait(min_replicas: usize, timeout: usize, config: Config) -> RES
             });
         }
 
-        while set.join_next().await.is_some() {
+        loop {
+            set.join_next().await;
             if num_responses.read().await.clone() >= min_replicas {
                 set.abort_all()
             }
@@ -161,7 +161,7 @@ async fn handle_replconf_replica(
         ))
         .to_command()
         .into(),
-        Conf::Ack => None,
+        Conf::Ack => None, // TODO: update offset
         Conf::ListeningPort => unreachable!(),
     })
 }
@@ -211,18 +211,20 @@ role:{role}
 master_replid:{REPLICATION_ID}
 master_repl_offset:{}
 ",
-            config.read().await.offset
+            0 // TODO: should this be the current offset?
         )
         .as_str(),
     )
 }
 
-async fn handle_psync(_id: Bulk, _offset: Bulk) -> Result<RESPType> {
+async fn handle_psync(_id: Bulk, _offset: Bulk, config: Config) -> Result<RESPType> {
     let mut rdb = Vec::new();
     File::open("./redis.rdb")
         .await?
         .read_to_end(&mut rdb)
         .await?;
+
+    config.write().await.offset = 0;
 
     Ok(RESPType::Multi(vec![
         RESPCmd::FullResync((bulk!(REPLICATION_ID), bulk!("0"))).to_command(),
