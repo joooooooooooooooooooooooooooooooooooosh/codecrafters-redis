@@ -16,6 +16,12 @@ pub enum Conf {
 }
 
 #[derive(Clone, Debug)]
+pub enum ConfGet {
+    Dir,
+    DbFilename,
+}
+
+#[derive(Clone, Debug)]
 pub enum RESPCmd {
     Echo(Bulk),
     Ping,
@@ -26,6 +32,7 @@ pub enum RESPCmd {
     Psync((Bulk, Bulk)),
     FullResync((Bulk, Bulk)),
     Wait((usize, usize)),
+    Config((Bulk, ConfGet)),
 }
 
 macro_rules! respcmd {
@@ -48,6 +55,7 @@ impl RESPCmd {
             RESPCmd::Psync((id, offset)) => respcmd!(bulk!("PSYNC") id offset),
             RESPCmd::FullResync((id, offset)) => Self::handle_full_resync(id, offset),
             RESPCmd::Wait(_) => todo!(),
+            RESPCmd::Config(_) => todo!(),
         }
     }
 
@@ -112,9 +120,28 @@ impl RESPCmd {
             b"REPLCONF" => Self::ReplConf(Self::parse_replconf(parts)?),
             b"PSYNC" => Self::Psync(Self::parse_psync(parts)?),
             b"WAIT" => Self::Wait(Self::parse_wait(parts)?),
+            b"CONFIG" => Self::Config(Self::parse_config(parts)?),
             // TODO: FULLRESYNC being handled seperately due to being simple string
             _ => Self::Ping, // try not to crash
         })
+    }
+
+    fn parse_config(mut parts: impl Iterator<Item = RESPType>) -> Result<(Bulk, ConfGet)> {
+        let Some(RESPType::Bulk(Some(arg))) = parts.next() else {
+            bail!("Config requires an argument");
+        };
+
+        let Some(RESPType::Bulk(Some(section))) = parts.next() else {
+            bail!("Config requires an argument");
+        };
+
+        let section = match section.data.to_ascii_lowercase().as_slice() {
+            b"dir" => ConfGet::Dir,
+            b"dbfilename" => ConfGet::DbFilename,
+            _ => bail!("Invalid Config argument"),
+        };
+
+        Ok((arg, section))
     }
 
     fn parse_echo(mut parts: impl Iterator<Item = RESPType>) -> Result<Bulk> {

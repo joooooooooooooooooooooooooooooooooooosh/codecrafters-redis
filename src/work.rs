@@ -16,7 +16,7 @@ use tokio::{
 
 use crate::{
     bulk,
-    respcmd::{Conf, RESPCmd},
+    respcmd::{Conf, ConfGet, RESPCmd},
     resptype::RESPType,
     types::{Bulk, Config, Db, Entry},
 };
@@ -52,9 +52,30 @@ pub async fn handle_command(cmd: RESPCmd, db: Db, config: Config) -> Result<Opti
             handle_replconf_replica(c, arg, config).await?
         }
         RESPCmd::FullResync(_) => todo!(),
+        RESPCmd::Config((arg, confget)) => handle_config(arg, confget, config).await.into(),
         _ => unimplemented!(), // shouldn't be needed on a replica
     })
     .flatten())
+}
+
+async fn handle_config(_arg: Bulk, confget: ConfGet, config: Config) -> RESPType {
+    RESPType::Array(match confget {
+        ConfGet::Dir => vec![
+            RESPType::Bulk(Some(bulk!("dir"))),
+            RESPType::Bulk(config.read().await.dir.as_ref().map(|val| bulk!(val))),
+        ],
+        ConfGet::DbFilename => vec![
+            RESPType::Bulk(Some(bulk!("dbfilename"))),
+            RESPType::Bulk(
+                config
+                    .read()
+                    .await
+                    .dbfilename
+                    .as_ref()
+                    .map(|val| bulk!(val)),
+            ),
+        ],
+    })
 }
 
 async fn handle_wait(min_replicas: usize, timeout: usize, config: Config) -> RESPType {

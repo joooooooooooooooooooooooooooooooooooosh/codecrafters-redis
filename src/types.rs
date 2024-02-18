@@ -19,6 +19,8 @@ pub struct _Config {
     pub replica_of: Option<(String, String)>,
     pub replicas: Vec<(UnboundedSender<Bytes>, Receiver<Bytes>, usize)>,
     pub offset: usize,
+    pub dir: Option<String>,
+    pub dbfilename: Option<String>,
 }
 pub type Config = Arc<RwLock<_Config>>;
 
@@ -36,9 +38,14 @@ pub fn parse_args() -> Config {
         None
     };
 
+    let dir = args().skip_while(|arg| arg != "--dir").nth(1);
+    let dbfilename = args().skip_while(|arg| arg != "--dbfilename").nth(1);
+
     Arc::new(RwLock::new(_Config {
         port,
         replica_of,
+        dir,
+        dbfilename,
         ..Default::default()
     }))
 }
