@@ -1,7 +1,8 @@
 use anyhow::Result;
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use std::{
     ops::AddAssign,
+    path::Path,
     sync::Arc,
     time::{Duration, SystemTime},
 };
@@ -32,7 +33,7 @@ pub async fn handle_command_master(
     Ok(Some(match cmd {
         RESPCmd::ReplConf((conf, arg)) => handle_replconf(conf, arg, config, tx, bx).await?,
         RESPCmd::Psync((id, offset)) => handle_psync(id, offset, config).await?.into(),
-        RESPCmd::Keys(arg) => handle_keys(arg).into(),
+        RESPCmd::Keys(arg) => handle_keys(arg, config).await?.into(),
         RESPCmd::Wait((num_replicas, timeout)) => {
             handle_wait(num_replicas, timeout, config).await.into()
         }
@@ -58,7 +59,17 @@ pub async fn handle_command(cmd: RESPCmd, db: Db, config: Config) -> Result<Opti
     .flatten())
 }
 
-fn handle_keys(_arg: Bulk) -> RESPType {
+async fn handle_keys(_arg: Bulk, config: Config) -> Result<RESPType> {
+    let mut f = File::open(
+        Path::new(config.read().await.dir.clone().unwrap().as_str())
+            .join(config.read().await.dbfilename.clone().unwrap()),
+    )
+    .await?;
+
+    let mut b = BytesMut::new();
+    f.read_buf(&mut b).await?;
+    dbg!(b);
+
     todo!()
 }
 
