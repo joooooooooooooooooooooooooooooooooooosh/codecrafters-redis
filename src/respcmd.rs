@@ -33,6 +33,7 @@ pub enum RESPCmd {
     FullResync((Bulk, Bulk)),
     Wait((usize, usize)),
     Config((Bulk, ConfGet)),
+    Keys(Bulk),
 }
 
 macro_rules! respcmd {
@@ -56,6 +57,7 @@ impl RESPCmd {
             RESPCmd::FullResync((id, offset)) => Self::handle_full_resync(id, offset),
             RESPCmd::Wait(_) => todo!(),
             RESPCmd::Config(_) => todo!(),
+            RESPCmd::Keys(_) => todo!(),
         }
     }
 
@@ -121,9 +123,18 @@ impl RESPCmd {
             b"PSYNC" => Self::Psync(Self::parse_psync(parts)?),
             b"WAIT" => Self::Wait(Self::parse_wait(parts)?),
             b"CONFIG" => Self::Config(Self::parse_config(parts)?),
+            b"KEYS" => Self::Keys(Self::parse_keys(parts)?),
             // TODO: FULLRESYNC being handled seperately due to being simple string
             _ => Self::Ping, // try not to crash
         })
+    }
+
+    fn parse_keys(mut parts: impl Iterator<Item = RESPType>) -> Result<Bulk> {
+        let Some(RESPType::Bulk(Some(arg))) = parts.next() else {
+            bail!("Keys requires an argument");
+        };
+
+        Ok(arg)
     }
 
     fn parse_config(mut parts: impl Iterator<Item = RESPType>) -> Result<(Bulk, ConfGet)> {
