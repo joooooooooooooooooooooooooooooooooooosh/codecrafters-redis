@@ -7,8 +7,7 @@ use std::{
 };
 use tokio::{
     fs::File,
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpStream,
+    io::AsyncReadExt,
     sync::{broadcast::Sender, mpsc::UnboundedSender, RwLock},
     task::JoinSet,
     time,
@@ -33,6 +32,7 @@ pub async fn handle_command_master(
     Ok(Some(match cmd {
         RESPCmd::ReplConf((conf, arg)) => handle_replconf(conf, arg, config, tx, bx).await?,
         RESPCmd::Psync((id, offset)) => handle_psync(id, offset, config).await?.into(),
+        RESPCmd::Keys(arg) => handle_keys(arg).into(),
         RESPCmd::Wait((num_replicas, timeout)) => {
             handle_wait(num_replicas, timeout, config).await.into()
         }
@@ -56,6 +56,10 @@ pub async fn handle_command(cmd: RESPCmd, db: Db, config: Config) -> Result<Opti
         _ => unimplemented!(), // shouldn't be needed on a replica
     })
     .flatten())
+}
+
+fn handle_keys(_arg: Bulk) -> RESPType {
+    todo!()
 }
 
 async fn handle_config(_arg: Bulk, confget: ConfGet, config: Config) -> RESPType {
@@ -251,80 +255,4 @@ async fn handle_psync(_id: Bulk, _offset: Bulk, config: Config) -> Result<RESPTy
         RESPCmd::FullResync((bulk!(REPLICATION_ID), bulk!("0"))).to_command(),
         RESPType::RDBFile(rdb),
     ]))
-}
-
-pub async fn connect_to_master(host: String, port: String, config: Config, db: Db) -> Result<()> {
-    let mut buf = [0; 1024]; // TODO: can we read straight into Bytes
-    let mut conn = TcpStream::connect(format!("{host}:{port}")).await?;
-
-    conn.write_all(&RESPCmd::Ping.as_bytes()).await?;
-
-    while let 0 = conn.read(&mut buf).await? {} // TODO: check OK
-
-    conn.write_all(
-        &RESPCmd::ReplConf((Conf::ListeningPort, Bulk::from(&config.read().await.port))).as_bytes(),
-    )
-    .await?;
-
-    while let 0 = conn.read(&mut buf).await? {} // TODO: check OK
-
-    conn.write_all(&RESPCmd::ReplConf((Conf::Capa, Bulk::from("psync2"))).as_bytes())
-        .await?;
-
-    while let 0 = conn.read(&mut buf).await? {} // TODO: check OK
-
-    conn.write_all(&RESPCmd::Psync((Bulk::from("?"), Bulk::from("-1"))).as_bytes())
-        .await?;
-
-    while let 0 = conn.read(&mut buf).await? {}
-
-    let mut buff = Bytes::copy_from_slice(&buf);
-    let _full_resync = RESPType::parse(&mut buff)?;
-
-    // Recieve RDBFile
-    match RESPType::parse(&mut buff) {
-        Ok(_) => {}
-        Err(_) => {
-            while let 0 = conn.read(&mut buf).await? {}
-            let mut buff = Bytes::copy_from_slice(&buf);
-            RESPType::parse(&mut buff)?;
-        }
-    }
-
-    // TODO: verify full resync and rdb file
-
-    // TODO: reduce hacky duplication
-    while let Ok((cmd, len)) = RESPType::parse(&mut buff) {
-        let cmd = RESPCmd::parse(cmd)?;
-        if let Some(resp) = handle_command(cmd.clone(), db.clone(), config.clone()).await? {
-            match cmd {
-                RESPCmd::ReplConf((Conf::GetAck, _)) => conn.write_all(&resp.as_bytes()).await?,
-                _ => {}
-            }
-        }
-
-        config.write().await.offset += len;
-    }
-
-    loop {
-        let len = conn.read(&mut buf).await?;
-        if len == 0 {
-            continue;
-        }
-
-        let mut buf = Bytes::copy_from_slice(&buf[..len]);
-        while let Ok((cmd, len)) = RESPType::parse(&mut buf) {
-            let cmd = RESPCmd::parse(cmd)?;
-            if let Some(resp) = handle_command(cmd.clone(), db.clone(), config.clone()).await? {
-                match cmd {
-                    RESPCmd::ReplConf((Conf::GetAck, _)) => {
-                        conn.write_all(&resp.as_bytes()).await?
-                    }
-                    _ => {}
-                }
-            }
-
-            config.write().await.offset += len;
-        }
-    }
 }

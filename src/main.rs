@@ -9,9 +9,8 @@ pub mod types;
 pub mod work;
 
 use crate::{
-    connection::{master_listen, replica_listen},
+    connection::{connect_to_master, master_listen, replica_listen},
     types::{parse_args, Bulk, Entry},
-    work::connect_to_master,
 };
 
 #[tokio::main]
