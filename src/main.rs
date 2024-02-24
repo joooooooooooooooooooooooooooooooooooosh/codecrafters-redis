@@ -34,7 +34,7 @@ async fn main() -> Result<()> {
             Ok(mut f) => {
                 let mut buf = Vec::new();
                 f.read_to_end(&mut buf).await?;
-                dbg!(connection::process_rdb_file(buf, db.clone()).await)?;
+                connection::process_rdb_file(buf, db.clone()).await?;
             }
             Err(e) if e.kind() == ErrorKind::NotFound => {}
             Err(e) => return Err(e.into()),

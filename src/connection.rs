@@ -1,3 +1,8 @@
+use std::{
+    ops::Add,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
+
 use anyhow::{bail, Result};
 use bytes::{Buf, Bytes};
 use tokio::{
@@ -131,9 +136,8 @@ pub async fn replica_handle_connection(
         let mut buf = Bytes::copy_from_slice(&buf[..len]);
         while let Ok((cmd, len)) = RESPType::parse(&mut buf) {
             let cmd = RESPCmd::parse(cmd)?;
-            dbg!(&cmd);
             if let Some(resp) = work::handle_command(cmd, db.clone(), config.clone()).await? {
-                stream.write_all(dbg!(&resp.as_bytes())).await?;
+                stream.write_all(&resp.as_bytes()).await?;
             }
 
             config.write().await.offset += len;
@@ -181,7 +185,7 @@ pub async fn connect_to_master(host: String, port: String, config: Config, db: D
         bail!("Did not receive RDB file");
     };
 
-    dbg!(process_rdb_file(file, db.clone()).await)?;
+    process_rdb_file(file, db.clone()).await?;
 
     // TODO: verify full resync and rdb file
 
@@ -210,7 +214,7 @@ pub async fn connect_to_master(host: String, port: String, config: Config, db: D
             if let Some(resp) = handle_command(cmd.clone(), db.clone(), config.clone()).await? {
                 match cmd {
                     RESPCmd::ReplConf((Conf::GetAck, _)) => {
-                        conn.write_all(dbg!(&resp.as_bytes())).await?
+                        conn.write_all(&resp.as_bytes()).await?
                     }
                     _ => {}
                 }
@@ -247,7 +251,6 @@ impl RDBOpcode {
 
 pub async fn process_rdb_file(file: Vec<u8>, db: Db) -> Result<()> {
     let mut file = Bytes::from(file);
-    dbg!(&file);
     let b"REDIS" = file.split_to(5).as_ref() else {
         bail!("REDIS fingerprint missing");
     };
@@ -265,22 +268,45 @@ pub async fn process_rdb_file(file: Vec<u8>, db: Db) -> Result<()> {
                 let _ht_len = parse_int(&mut file)?;
                 let _ht_expiry_len = parse_int(&mut file)?;
             }
-            Some(RDBOpcode::ExpireTimeMs) => todo!(),
-            Some(RDBOpcode::ExpireTime) => todo!(),
+            Some(RDBOpcode::ExpireTimeMs) => {
+                let ex = file.get_u64_le() as u128;
+                let val_type = file.get_u8();
+                let (key, val) = parse_key_val(val_type, &mut file)?;
+
+                let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis();
+                let ex = if ex < now {
+                    continue;
+                } else {
+                    SystemTime::now().add(Duration::from_millis((ex - now) as u64))
+                };
+
+                let mut db = db.lock().await;
+                db.insert(key.into(), (val, Some(ex)).into());
+            }
+            Some(RDBOpcode::ExpireTime) => {
+                let ex = file.get_u32_le() as u64;
+                let val_type = file.get_u8();
+                let (key, val) = parse_key_val(val_type, &mut file)?;
+
+                let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+                let ex = if ex < now {
+                    continue;
+                } else {
+                    SystemTime::now().add(Duration::from_secs(ex - now))
+                };
+
+                let mut db = db.lock().await;
+                db.insert(key.into(), (val, Some(ex)).into());
+            }
             Some(RDBOpcode::SelectDB) => {
                 let _db_num = file.get_u8();
             }
             Some(RDBOpcode::EOF) => break, // TODO: checksum
             None => {
                 let val_type = opcode;
-                let key = parse_string(&mut file)?;
-                let val = match val_type {
-                    0 => parse_string(&mut file)?,
-                    _ => todo!(),
-                };
-
+                let (key, val) = parse_key_val(val_type, &mut file)?;
                 let mut db = db.lock().await;
-                db.insert(key.into(), val.into());
+                db.insert(key.into(), (val, None).into());
             }
         }
     }
@@ -306,11 +332,11 @@ pub async fn process_rdb_file(file: Vec<u8>, db: Db) -> Result<()> {
         }
     }
 
-    impl Into<Entry> for StringType {
+    impl Into<Entry> for (StringType, Option<SystemTime>) {
         fn into(self) -> Entry {
             Entry {
-                val: self.into(),
-                timeout: None,
+                val: self.0.into(),
+                timeout: self.1,
             }
         }
     }
@@ -371,6 +397,16 @@ pub async fn process_rdb_file(file: Vec<u8>, db: Db) -> Result<()> {
                 s => bail!("Invalid len {s}"),
             }),
         })
+    }
+
+    fn parse_key_val(val_type: u8, file: &mut Bytes) -> Result<(StringType, StringType)> {
+        let key = parse_string(file)?;
+        let val = match val_type {
+            0 => parse_string(file)?,
+            _ => todo!(),
+        };
+
+        Ok((key, val))
     }
 
     Ok(())
