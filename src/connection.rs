@@ -1,5 +1,5 @@
 use anyhow::{bail, Result};
-use bytes::Bytes;
+use bytes::{Buf, Bytes};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{tcp::OwnedReadHalf, TcpListener, TcpStream},
@@ -12,7 +12,7 @@ use tokio::{
 use crate::{
     respcmd::{Conf, RESPCmd},
     resptype::RESPType,
-    types::{Bulk, Config, Db},
+    types::{Bulk, Config, Db, Entry},
     work::{self, handle_command},
 };
 
@@ -131,8 +131,9 @@ pub async fn replica_handle_connection(
         let mut buf = Bytes::copy_from_slice(&buf[..len]);
         while let Ok((cmd, len)) = RESPType::parse(&mut buf) {
             let cmd = RESPCmd::parse(cmd)?;
+            dbg!(&cmd);
             if let Some(resp) = work::handle_command(cmd, db.clone(), config.clone()).await? {
-                stream.write_all(&resp.as_bytes()).await?;
+                stream.write_all(dbg!(&resp.as_bytes())).await?;
             }
 
             config.write().await.offset += len;
@@ -180,9 +181,7 @@ pub async fn connect_to_master(host: String, port: String, config: Config, db: D
         bail!("Did not receive RDB file");
     };
 
-    dbg!(Bytes::copy_from_slice(file.as_slice()));
-
-    // process_rdb_file(file)?;
+    dbg!(process_rdb_file(file, db.clone()).await)?;
 
     // TODO: verify full resync and rdb file
 
@@ -211,7 +210,7 @@ pub async fn connect_to_master(host: String, port: String, config: Config, db: D
             if let Some(resp) = handle_command(cmd.clone(), db.clone(), config.clone()).await? {
                 match cmd {
                     RESPCmd::ReplConf((Conf::GetAck, _)) => {
-                        conn.write_all(&resp.as_bytes()).await?
+                        conn.write_all(dbg!(&resp.as_bytes())).await?
                     }
                     _ => {}
                 }
@@ -224,30 +223,31 @@ pub async fn connect_to_master(host: String, port: String, config: Config, db: D
 
 #[repr(u8)]
 enum RDBOpcode {
-    EOF = 0xFF,
-    SelectDB = 0xFE,
-    ExpireTime = 0xFD,
-    ExpireTimeMs = 0xFC,
-    ResizeDB = 0xFB,
     Auxiliary = 0xFA,
+    ResizeDB = 0xFB,
+    ExpireTimeMs = 0xFC,
+    ExpireTime = 0xFD,
+    SelectDB = 0xFE,
+    EOF = 0xFF,
 }
 
 impl RDBOpcode {
     const fn from(val: u8) -> Option<Self> {
         Some(match val {
-            0xFF => Self::EOF,
-            0xFE => Self::SelectDB,
-            0xFD => Self::ExpireTime,
-            0xFC => Self::ExpireTimeMs,
-            0xFB => Self::ResizeDB,
             0xFA => Self::Auxiliary,
+            0xFB => Self::ResizeDB,
+            0xFC => Self::ExpireTimeMs,
+            0xFD => Self::ExpireTime,
+            0xFE => Self::SelectDB,
+            0xFF => Self::EOF,
             _ => return None,
         })
     }
 }
 
-fn process_rdb_file(file: Vec<u8>) -> Result<()> {
+pub async fn process_rdb_file(file: Vec<u8>, db: Db) -> Result<()> {
     let mut file = Bytes::from(file);
+    dbg!(&file);
     let b"REDIS" = file.split_to(5).as_ref() else {
         bail!("REDIS fingerprint missing");
     };
@@ -255,15 +255,122 @@ fn process_rdb_file(file: Vec<u8>) -> Result<()> {
     let _version = file.split_to(4);
 
     while !file.is_empty() {
-        match RDBOpcode::from(file[0]) {
+        let opcode = file.get_u8();
+        match RDBOpcode::from(opcode) {
+            Some(RDBOpcode::Auxiliary) => {
+                let _key = parse_string(&mut file)?;
+                let _val = parse_string(&mut file)?;
+            }
+            Some(RDBOpcode::ResizeDB) => {
+                let _ht_len = parse_int(&mut file)?;
+                let _ht_expiry_len = parse_int(&mut file)?;
+            }
+            Some(RDBOpcode::ExpireTimeMs) => todo!(),
+            Some(RDBOpcode::ExpireTime) => todo!(),
+            Some(RDBOpcode::SelectDB) => {
+                let _db_num = file.get_u8();
+            }
             Some(RDBOpcode::EOF) => break, // TODO: checksum
-            Some(RDBOpcode::SelectDB) => {}
-            Some(RDBOpcode::ExpireTime) => {}
-            Some(RDBOpcode::ExpireTimeMs) => {}
-            Some(RDBOpcode::ResizeDB) => {}
-            Some(RDBOpcode::Auxiliary) => {}
-            None => {}
+            None => {
+                let val_type = opcode;
+                let key = parse_string(&mut file)?;
+                let val = match val_type {
+                    0 => parse_string(&mut file)?,
+                    _ => todo!(),
+                };
+
+                let mut db = db.lock().await;
+                db.insert(key.into(), val.into());
+            }
         }
+    }
+
+    enum Len {
+        One(u8),
+        Two(u8),
+        Four,
+        Special(u8),
+    }
+
+    enum StringType {
+        String(Bytes),
+        Int(u32),
+    }
+
+    impl Into<Bulk> for StringType {
+        fn into(self) -> Bulk {
+            match self {
+                StringType::String(s) => Bulk::from(String::from_utf8_lossy(s.as_ref()).as_ref()),
+                StringType::Int(i) => Bulk::from(i.to_string().as_ref()),
+            }
+        }
+    }
+
+    impl Into<Entry> for StringType {
+        fn into(self) -> Entry {
+            Entry {
+                val: self.into(),
+                timeout: None,
+            }
+        }
+    }
+
+    fn parse_len(file: &mut Bytes) -> Len {
+        const MASK: u8 = 0b1100_0000;
+        let len = file.get_u8();
+        let typ = (len & MASK) >> 6;
+        let len = len & !MASK;
+
+        match typ {
+            0b00 => Len::One(len),
+            0b01 => Len::Two(len),
+            0b10 => Len::Four,
+            0b11 => Len::Special(len),
+            _ => unreachable!(),
+        }
+    }
+
+    fn parse_int(file: &mut Bytes) -> Result<StringType> {
+        let typ = parse_len(file);
+        Ok(StringType::Int(match typ {
+            Len::One(len) => len as u32,
+            Len::Two(len) => {
+                let second = file.get_u8() as u16;
+                let mut len = (len as u16) << 8;
+                len |= second;
+                len as u32
+            }
+            Len::Four => file.get_u32(),
+            Len::Special(fmt) => match fmt {
+                0 => file.get_u8() as u32,
+                1 => file.get_u16() as u32,
+                2 => file.get_u32(),
+                s => bail!("Invalid len {s}"),
+            },
+        }))
+    }
+
+    fn parse_string(file: &mut Bytes) -> Result<StringType> {
+        let typ = parse_len(file);
+        Ok(match typ {
+            Len::One(len) => StringType::String(file.split_to(len as usize)),
+            Len::Two(len) => {
+                let second = file.get_u8() as u16;
+                let mut len = (len as u16) << 8;
+                len |= second;
+                StringType::String(file.split_to(len as usize))
+            }
+            Len::Four => {
+                let len = file.get_u32();
+                StringType::String(file.split_to(len as usize))
+            }
+            Len::Special(fmt) => StringType::Int(match fmt {
+                0 => file.get_u8() as u32,
+                1 => file.get_u16() as u32,
+                2 => file.get_u32(),
+                s => bail!("Invalid len {s}"),
+            }),
+        })
     }
 
     Ok(())

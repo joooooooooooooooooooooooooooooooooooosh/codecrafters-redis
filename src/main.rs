@@ -1,6 +1,6 @@
 use anyhow::Result;
-use std::{collections::HashMap, sync::Arc};
-use tokio::{net::TcpListener, sync::Mutex};
+use std::{collections::HashMap, io::ErrorKind, path::Path, sync::Arc};
+use tokio::{fs::File, io::AsyncReadExt, net::TcpListener, sync::Mutex};
 
 pub mod connection;
 pub mod respcmd;
@@ -26,6 +26,20 @@ async fn main() -> Result<()> {
         let port = port.clone();
         tokio::spawn(connect_to_master(host, port, config, db.clone()));
     };
+
+    if let Some(dir) = &config.read().await.dir {
+        match File::open(Path::new(&dir).join(config.read().await.dbfilename.clone().unwrap()))
+            .await
+        {
+            Ok(mut f) => {
+                let mut buf = Vec::new();
+                f.read_to_end(&mut buf).await?;
+                dbg!(connection::process_rdb_file(buf, db.clone()).await)?;
+            }
+            Err(e) if e.kind() == ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
 
     let is_master = config.read().await.is_master();
 
