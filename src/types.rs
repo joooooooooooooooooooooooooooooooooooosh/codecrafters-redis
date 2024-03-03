@@ -91,7 +91,19 @@ impl Display for Bulk {
 }
 
 #[derive(Clone, Debug)]
-pub struct Entry {
+pub struct StringEntry {
     pub val: Bulk,
     pub timeout: Option<SystemTime>,
+}
+
+#[derive(Clone, Debug)]
+pub struct StreamEntry {
+    pub id: Bulk,
+    pub vals: HashMap<Bulk, Bulk>,
+}
+
+#[derive(Clone, Debug)]
+pub enum Entry {
+    String(StringEntry),
+    Stream(StreamEntry),
 }

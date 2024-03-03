@@ -1,11 +1,16 @@
 use anyhow::{bail, Result};
 use bytes::Bytes;
 use std::{
+    collections::HashMap,
     ops::Add,
     time::{Duration, SystemTime},
 };
 
-use crate::{bulk, resptype::RESPType, types::Bulk};
+use crate::{
+    bulk,
+    resptype::RESPType,
+    types::{Bulk, StreamEntry},
+};
 
 #[derive(Clone, Debug)]
 pub enum Conf {
@@ -35,6 +40,7 @@ pub enum RESPCmd {
     Config((Bulk, ConfGet)),
     Keys(Bulk),
     Type(Bulk),
+    Xadd((Bulk, StreamEntry)),
 }
 
 macro_rules! respcmd {
@@ -60,6 +66,7 @@ impl RESPCmd {
             RESPCmd::Config(_) => todo!(),
             RESPCmd::Keys(_) => todo!(),
             RESPCmd::Type(_) => todo!(),
+            RESPCmd::Xadd(_) => todo!(),
         }
     }
 
@@ -127,9 +134,30 @@ impl RESPCmd {
             b"CONFIG" => Self::Config(Self::parse_config(parts)?),
             b"KEYS" => Self::Keys(Self::parse_keys(parts)?),
             b"TYPE" => Self::Type(Self::parse_type(parts)?),
+            b"XADD" => Self::Xadd(Self::parse_xadd(parts)?),
             // TODO: FULLRESYNC being handled seperately due to being simple string
             _ => Self::Ping, // try not to crash
         })
+    }
+
+    fn parse_xadd(mut parts: impl Iterator<Item = RESPType>) -> Result<(Bulk, StreamEntry)> {
+        let Some(RESPType::Bulk(Some(field))) = parts.next() else {
+            bail!("Xadd requires a key");
+        };
+
+        let Some(RESPType::Bulk(Some(id))) = parts.next() else {
+            bail!("Xadd requires a key");
+        };
+
+        let mut vals = HashMap::new();
+        while let Some(RESPType::Bulk(Some(key))) = parts.next() {
+            let Some(RESPType::Bulk(Some(val))) = parts.next() else {
+                bail!("Xadd: key requires value");
+            };
+            vals.insert(key, val);
+        }
+
+        Ok((field, StreamEntry { id, vals }))
     }
 
     fn parse_keys(mut parts: impl Iterator<Item = RESPType>) -> Result<Bulk> {

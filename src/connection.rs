@@ -17,7 +17,7 @@ use tokio::{
 use crate::{
     respcmd::{Conf, RESPCmd},
     resptype::RESPType,
-    types::{Bulk, Config, Db, Entry},
+    types::{Bulk, Config, Db, Entry, StringEntry},
     work::{self, handle_command},
 };
 
@@ -334,10 +334,10 @@ pub async fn process_rdb_file(file: Vec<u8>, db: Db) -> Result<()> {
 
     impl Into<Entry> for (StringType, Option<SystemTime>) {
         fn into(self) -> Entry {
-            Entry {
+            Entry::String(StringEntry {
                 val: self.0.into(),
                 timeout: self.1,
-            }
+            })
         }
     }
 

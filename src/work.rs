@@ -17,7 +17,7 @@ use crate::{
     bulk,
     respcmd::{Conf, ConfGet, RESPCmd},
     resptype::RESPType,
-    types::{Bulk, Config, Db, Entry},
+    types::{Bulk, Config, Db, Entry, StreamEntry, StringEntry},
 };
 
 const REPLICATION_ID: &str = "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb";
@@ -54,16 +54,26 @@ pub async fn handle_command(cmd: RESPCmd, db: Db, config: Config) -> Result<Opti
         RESPCmd::Config((arg, confget)) => handle_config(arg, confget, config).await.into(),
         RESPCmd::Keys(arg) => handle_keys(arg, db).await?.into(),
         RESPCmd::Type(field) => handle_type(field, db).await.into(),
+        RESPCmd::Xadd((field, stream)) => handle_xadd(field, stream, db).await.into(),
         _ => unimplemented!(), // shouldn't be needed on a replica
     })
     .flatten())
 }
 
+async fn handle_xadd(field: Bulk, stream: StreamEntry, db: Db) -> RESPType {
+    // TODO: put stuff in stream
+    // TODO: update rather than replace existing streams
+    let id = stream.id.to_string();
+    db.lock().await.insert(field, Entry::Stream(stream));
+
+    RESPType::String(id)
+}
+
 async fn handle_type(field: Bulk, db: Db) -> RESPType {
-    RESPType::Bulk(Some(bulk!(if db.lock().await.contains_key(&field) {
-        "string"
-    } else {
-        "none"
+    RESPType::Bulk(Some(bulk!(match db.lock().await.get(&field) {
+        Some(Entry::String(_)) => "string",
+        Some(Entry::Stream(_)) => "stream",
+        None => "none",
     })))
 }
 
@@ -208,7 +218,7 @@ async fn handle_replconf_replica(
 
 async fn handle_set(key: Bulk, val: Bulk, timeout: Option<SystemTime>, db: Db) -> RESPType {
     let mut db = db.lock().await;
-    db.insert(key, Entry { val, timeout });
+    db.insert(key, Entry::String(StringEntry { val, timeout }));
 
     RESPType::String(String::from("OK"))
 }
@@ -216,12 +226,15 @@ async fn handle_set(key: Bulk, val: Bulk, timeout: Option<SystemTime>, db: Db) -
 async fn handle_get(key: Bulk, db: Db) -> RESPType {
     let db = db.lock().await;
 
-    let val = db.get(&key).and_then(|e| {
-        if e.timeout.is_some_and(|timeout| timeout < SystemTime::now()) {
-            None
-        } else {
-            Some(e.val.clone())
+    let val = db.get(&key).and_then(|e| match e {
+        Entry::String(e) => {
+            if e.timeout.is_some_and(|timeout| timeout < SystemTime::now()) {
+                None
+            } else {
+                Some(e.val.clone())
+            }
         }
+        Entry::Stream(_) => todo!(),
     });
 
     RESPType::Bulk(val)
