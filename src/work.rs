@@ -32,7 +32,6 @@ pub async fn handle_command_master(
     Ok(Some(match cmd {
         RESPCmd::ReplConf((conf, arg)) => handle_replconf(conf, arg, config, tx, bx).await?,
         RESPCmd::Psync((id, offset)) => handle_psync(id, offset, config).await?.into(),
-        RESPCmd::Keys(arg) => handle_keys(arg, db).await?.into(),
         RESPCmd::Wait((num_replicas, timeout)) => {
             handle_wait(num_replicas, timeout, config).await.into()
         }
@@ -53,9 +52,19 @@ pub async fn handle_command(cmd: RESPCmd, db: Db, config: Config) -> Result<Opti
         }
         RESPCmd::FullResync(_) => todo!(),
         RESPCmd::Config((arg, confget)) => handle_config(arg, confget, config).await.into(),
+        RESPCmd::Keys(arg) => handle_keys(arg, db).await?.into(),
+        RESPCmd::Type(field) => handle_type(field, db).await.into(),
         _ => unimplemented!(), // shouldn't be needed on a replica
     })
     .flatten())
+}
+
+async fn handle_type(field: Bulk, db: Db) -> RESPType {
+    RESPType::Bulk(Some(bulk!(if db.lock().await.contains_key(&field) {
+        "string"
+    } else {
+        "none"
+    })))
 }
 
 async fn handle_keys(_arg: Bulk, db: Db) -> Result<RESPType> {

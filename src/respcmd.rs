@@ -34,6 +34,7 @@ pub enum RESPCmd {
     Wait((usize, usize)),
     Config((Bulk, ConfGet)),
     Keys(Bulk),
+    Type(Bulk),
 }
 
 macro_rules! respcmd {
@@ -58,6 +59,7 @@ impl RESPCmd {
             RESPCmd::Wait(_) => todo!(),
             RESPCmd::Config(_) => todo!(),
             RESPCmd::Keys(_) => todo!(),
+            RESPCmd::Type(_) => todo!(),
         }
     }
 
@@ -124,6 +126,7 @@ impl RESPCmd {
             b"WAIT" => Self::Wait(Self::parse_wait(parts)?),
             b"CONFIG" => Self::Config(Self::parse_config(parts)?),
             b"KEYS" => Self::Keys(Self::parse_keys(parts)?),
+            b"TYPE" => Self::Type(Self::parse_type(parts)?),
             // TODO: FULLRESYNC being handled seperately due to being simple string
             _ => Self::Ping, // try not to crash
         })
@@ -250,5 +253,13 @@ impl RESPCmd {
         let timeout = RESPType::parse_uinteger(&mut timeout.data)?;
 
         Ok((num_replicas, timeout))
+    }
+
+    fn parse_type(mut parts: impl Iterator<Item = RESPType>) -> Result<Bulk> {
+        let Some(RESPType::Bulk(Some(field))) = parts.next() else {
+            bail!("Type requires field");
+        };
+
+        Ok(field)
     }
 }
