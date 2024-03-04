@@ -1,6 +1,7 @@
-use anyhow::Result;
+use anyhow::{bail, Result};
 use bytes::Bytes;
 use std::{
+    cmp::Ordering,
     ops::AddAssign,
     sync::Arc,
     time::{Duration, SystemTime},
@@ -54,19 +55,55 @@ pub async fn handle_command(cmd: RESPCmd, db: Db, config: Config) -> Result<Opti
         RESPCmd::Config((arg, confget)) => handle_config(arg, confget, config).await.into(),
         RESPCmd::Keys(arg) => handle_keys(arg, db).await?.into(),
         RESPCmd::Type(field) => handle_type(field, db).await.into(),
-        RESPCmd::Xadd((field, stream)) => handle_xadd(field, stream, db).await.into(),
+        RESPCmd::Xadd((field, stream)) => handle_xadd(field, stream, db).await?.into(),
         _ => unimplemented!(), // shouldn't be needed on a replica
     })
     .flatten())
 }
 
-async fn handle_xadd(field: Bulk, stream: StreamEntry, db: Db) -> RESPType {
+async fn handle_xadd(field: Bulk, event: StreamEntry, db: Db) -> Result<RESPType> {
+    fn err() -> Result<RESPType> {
+        Ok(RESPType::Error(String::from(
+            "ERR The ID specified in XADD is equal or smaller than the target stream top item",
+        )))
+    }
+
     // TODO: put stuff in stream
     // TODO: update rather than replace existing streams
-    let id = stream.id.to_string();
-    db.lock().await.insert(field, Entry::Stream(stream));
+    let id = event.id.clone();
+    let id = id.as_string();
 
-    RESPType::String(id)
+    let mut db = db.lock().await;
+    let Entry::Stream(stream) = db.entry(field).or_insert(Entry::Stream(Default::default())) else {
+        bail!("Called XADD on a non-stream");
+    };
+
+    let (id_ms_time, id_sq_num) = id.split_once('-').unwrap();
+    let id_ms_time: usize = id_ms_time.parse()?;
+    let id_sq_num: usize = id_sq_num.parse()?;
+    if id_ms_time == 0 && id_sq_num == 0 {
+        return Ok(RESPType::Error(String::from(
+            "ERR The ID specified in XADD must be greater than 0-0",
+        )));
+    }
+
+    if let Some(last) = stream.last() {
+        let last = last.id.as_string();
+
+        let (ms_time, sq_num) = last.split_once('-').unwrap();
+        let ms_time: usize = ms_time.parse()?;
+        let sq_num: usize = sq_num.parse()?;
+
+        match ms_time.cmp(&id_ms_time) {
+            Ordering::Greater => return err(),
+            Ordering::Equal if sq_num >= id_sq_num => return err(),
+            _ => {}
+        };
+    }
+
+    stream.push(event);
+
+    Ok(RESPType::String(id.into_owned()))
 }
 
 async fn handle_type(field: Bulk, db: Db) -> RESPType {

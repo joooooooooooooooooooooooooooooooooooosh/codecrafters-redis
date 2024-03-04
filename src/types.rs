@@ -1,5 +1,8 @@
 use bytes::Bytes;
-use std::{collections::HashMap, env::args, fmt::Display, io::Read, sync::Arc, time::SystemTime};
+use std::{
+    borrow::Cow, collections::HashMap, env::args, fmt::Display, io::Read, sync::Arc,
+    time::SystemTime,
+};
 use tokio::sync::{broadcast::Receiver, mpsc::UnboundedSender, Mutex, RwLock};
 
 pub type Db = Arc<Mutex<HashMap<Bulk, Entry>>>;
@@ -74,6 +77,10 @@ impl Bulk {
         self.data.as_ref()
     }
 
+    pub fn as_string(&self) -> Cow<'_, str> {
+        String::from_utf8_lossy(&self.data)
+    }
+
     pub fn from(from: &str) -> Self {
         Self {
             len: from.len(),
@@ -105,5 +112,5 @@ pub struct StreamEntry {
 #[derive(Clone, Debug)]
 pub enum Entry {
     String(StringEntry),
-    Stream(StreamEntry),
+    Stream(Vec<StreamEntry>),
 }

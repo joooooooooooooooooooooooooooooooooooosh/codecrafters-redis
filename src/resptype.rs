@@ -21,10 +21,18 @@ impl RESPType {
             RESPType::String(s) => Self::ser_string(s),
             RESPType::Bulk(b) => Self::ser_bulk(b),
             RESPType::Array(a) => Self::ser_array(a),
-            RESPType::Error(_) => todo!(),
+            RESPType::Error(e) => Self::ser_error(e),
             RESPType::RDBFile(f) => Self::ser_rdb_file(f),
             RESPType::Multi(m) => Self::ser_multi(m),
         }
+    }
+
+    fn ser_error(e: String) -> BytesMut {
+        let mut resp = BytesMut::with_capacity(3 + e.len());
+        resp.put_u8(ERROR);
+        resp.put_slice(e.as_bytes());
+        resp.put_slice(CRLF);
+        resp
     }
 
     fn ser_integer(i: isize) -> BytesMut {
