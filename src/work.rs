@@ -57,9 +57,57 @@ pub async fn handle_command(cmd: RESPCmd, db: Db, config: Config) -> Result<Opti
         RESPCmd::Keys(arg) => handle_keys(arg, db).await?.into(),
         RESPCmd::Type(field) => handle_type(field, db).await.into(),
         RESPCmd::Xadd((field, id, map)) => handle_xadd(field, id, map, db).await?.into(),
+        RESPCmd::Xrange((field, start, end)) => handle_xrange(field, start, end, db).await?.into(),
         _ => unimplemented!(), // shouldn't be needed on a replica
     })
     .flatten())
+}
+
+async fn handle_xrange(field: Bulk, start: Bulk, end: Bulk, db: Db) -> Result<RESPType> {
+    let db = db.lock().await;
+    let Some(Entry::Stream(stream)) = db.get(&field) else {
+        bail!("Called XRange on a non-stream");
+    };
+
+    let start = start.as_string();
+    let (s_ms_time, s_sq_num) = start.split_once('-').unwrap();
+    let s_ms_time = s_ms_time.parse()?;
+    let s_sq_num = s_sq_num.parse()?;
+
+    let end = end.as_string();
+    let (e_ms_time, e_sq_num) = end.split_once('-').unwrap();
+    let e_ms_time = e_ms_time.parse()?;
+    let e_sq_num = e_sq_num.parse()?;
+
+    let res = stream
+        .iter()
+        .filter_map(|e| {
+            let (ms_time, sq_num) = e.id;
+            if (ms_time >= s_ms_time && sq_num >= s_sq_num)
+                && (ms_time <= e_ms_time && sq_num <= e_sq_num)
+            {
+                let vals: Vec<_> = e
+                    .vals
+                    .iter()
+                    .map(|(k, v)| {
+                        vec![
+                            RESPType::Bulk(Some(k.to_owned())),
+                            RESPType::Bulk(Some(v.to_owned())),
+                        ]
+                    })
+                    .collect();
+
+                Some(RESPType::Array(vec![
+                    RESPType::Bulk(Some(bulk!(format!("{}-{}", e.id.0, e.id.1).as_ref()))),
+                    RESPType::Array(vals.into_iter().flatten().collect()),
+                ]))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    Ok(RESPType::Array(res))
 }
 
 async fn handle_xadd(field: Bulk, id: Bulk, map: HashMap<Bulk, Bulk>, db: Db) -> Result<RESPType> {
@@ -69,8 +117,8 @@ async fn handle_xadd(field: Bulk, id: Bulk, map: HashMap<Bulk, Bulk>, db: Db) ->
         )))
     }
 
-    // TODO: put stuff in stream
-    // TODO: update rather than replace existing streams
+    // TODO:propagate to replicas
+
     let id = id.as_string();
 
     let mut db = db.lock().await;
@@ -78,17 +126,14 @@ async fn handle_xadd(field: Bulk, id: Bulk, map: HashMap<Bulk, Bulk>, db: Db) ->
         bail!("Called XADD on a non-stream");
     };
 
+    // TODO: ugly as hell
     let (id_ms_time, id_sq_num) = if let Some((id_ms_time, id_sq_num)) = id.split_once('-') {
         let id_ms_time: usize = id_ms_time.parse()?;
         let id_sq_num: usize = if let Ok(num) = id_sq_num.parse() {
             num
         } else {
             if id_sq_num == "*" {
-                let mut len = stream
-                    .iter()
-                    .filter(|e| e.id.0 == id_ms_time)
-                    .collect::<Vec<_>>()
-                    .len();
+                let mut len = stream.iter().filter(|e| e.id.0 == id_ms_time).count();
                 if len == 0 && id_ms_time == 0 {
                     len = 1;
                 }
@@ -101,11 +146,7 @@ async fn handle_xadd(field: Bulk, id: Bulk, map: HashMap<Bulk, Bulk>, db: Db) ->
     } else {
         if id == "*" {
             let id_ms_time = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as usize;
-            let id_sq_num = stream
-                .iter()
-                .filter(|e| e.id.0 == id_ms_time)
-                .collect::<Vec<_>>()
-                .len();
+            let id_sq_num = stream.iter().filter(|e| e.id.0 == id_ms_time).count();
             (id_ms_time, id_sq_num)
         } else {
             return err();

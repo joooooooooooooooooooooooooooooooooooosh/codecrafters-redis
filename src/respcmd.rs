@@ -37,6 +37,7 @@ pub enum RESPCmd {
     Keys(Bulk),
     Type(Bulk),
     Xadd((Bulk, Bulk, HashMap<Bulk, Bulk>)),
+    Xrange((Bulk, Bulk, Bulk)),
 }
 
 macro_rules! respcmd {
@@ -63,6 +64,7 @@ impl RESPCmd {
             RESPCmd::Keys(_) => todo!(),
             RESPCmd::Type(_) => todo!(),
             RESPCmd::Xadd(_) => todo!(),
+            RESPCmd::Xrange(_) => todo!(),
         }
     }
 
@@ -131,9 +133,26 @@ impl RESPCmd {
             b"KEYS" => Self::Keys(Self::parse_keys(parts)?),
             b"TYPE" => Self::Type(Self::parse_type(parts)?),
             b"XADD" => Self::Xadd(Self::parse_xadd(parts)?),
+            b"XRANGE" => Self::Xrange(Self::parse_xrange(parts)?),
             // TODO: FULLRESYNC being handled seperately due to being simple string
             _ => Self::Ping, // try not to crash
         })
+    }
+
+    fn parse_xrange(mut parts: impl Iterator<Item = RESPType>) -> Result<(Bulk, Bulk, Bulk)> {
+        let Some(RESPType::Bulk(Some(field))) = parts.next() else {
+            bail!("Xrange requires a key");
+        };
+
+        let Some(RESPType::Bulk(Some(start))) = parts.next() else {
+            bail!("Xrange requires a start");
+        };
+
+        let Some(RESPType::Bulk(Some(end))) = parts.next() else {
+            bail!("Xrange requires a end");
+        };
+
+        Ok((field, start, end))
     }
 
     fn parse_xadd(
