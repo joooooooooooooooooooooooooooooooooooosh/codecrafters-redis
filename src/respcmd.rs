@@ -6,11 +6,7 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use crate::{
-    bulk,
-    resptype::RESPType,
-    types::{Bulk, StreamEntry},
-};
+use crate::{bulk, resptype::RESPType, types::Bulk};
 
 #[derive(Clone, Debug)]
 pub enum Conf {
@@ -40,7 +36,7 @@ pub enum RESPCmd {
     Config((Bulk, ConfGet)),
     Keys(Bulk),
     Type(Bulk),
-    Xadd((Bulk, StreamEntry)),
+    Xadd((Bulk, Bulk, HashMap<Bulk, Bulk>)),
 }
 
 macro_rules! respcmd {
@@ -140,7 +136,9 @@ impl RESPCmd {
         })
     }
 
-    fn parse_xadd(mut parts: impl Iterator<Item = RESPType>) -> Result<(Bulk, StreamEntry)> {
+    fn parse_xadd(
+        mut parts: impl Iterator<Item = RESPType>,
+    ) -> Result<(Bulk, Bulk, HashMap<Bulk, Bulk>)> {
         let Some(RESPType::Bulk(Some(field))) = parts.next() else {
             bail!("Xadd requires a key");
         };
@@ -157,7 +155,7 @@ impl RESPCmd {
             vals.insert(key, val);
         }
 
-        Ok((field, StreamEntry { id, vals }))
+        Ok((field, id, vals))
     }
 
     fn parse_keys(mut parts: impl Iterator<Item = RESPType>) -> Result<Bulk> {

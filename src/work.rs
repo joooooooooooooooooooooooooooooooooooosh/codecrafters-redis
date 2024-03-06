@@ -2,6 +2,7 @@ use anyhow::{bail, Result};
 use bytes::Bytes;
 use std::{
     cmp::Ordering,
+    collections::HashMap,
     ops::AddAssign,
     sync::Arc,
     time::{Duration, SystemTime},
@@ -55,13 +56,13 @@ pub async fn handle_command(cmd: RESPCmd, db: Db, config: Config) -> Result<Opti
         RESPCmd::Config((arg, confget)) => handle_config(arg, confget, config).await.into(),
         RESPCmd::Keys(arg) => handle_keys(arg, db).await?.into(),
         RESPCmd::Type(field) => handle_type(field, db).await.into(),
-        RESPCmd::Xadd((field, stream)) => handle_xadd(field, stream, db).await?.into(),
+        RESPCmd::Xadd((field, id, map)) => handle_xadd(field, id, map, db).await?.into(),
         _ => unimplemented!(), // shouldn't be needed on a replica
     })
     .flatten())
 }
 
-async fn handle_xadd(field: Bulk, event: StreamEntry, db: Db) -> Result<RESPType> {
+async fn handle_xadd(field: Bulk, id: Bulk, map: HashMap<Bulk, Bulk>, db: Db) -> Result<RESPType> {
     fn err() -> Result<RESPType> {
         Ok(RESPType::Error(String::from(
             "ERR The ID specified in XADD is equal or smaller than the target stream top item",
@@ -70,7 +71,6 @@ async fn handle_xadd(field: Bulk, event: StreamEntry, db: Db) -> Result<RESPType
 
     // TODO: put stuff in stream
     // TODO: update rather than replace existing streams
-    let id = event.id.clone();
     let id = id.as_string();
 
     let mut db = db.lock().await;
@@ -80,7 +80,24 @@ async fn handle_xadd(field: Bulk, event: StreamEntry, db: Db) -> Result<RESPType
 
     let (id_ms_time, id_sq_num) = id.split_once('-').unwrap();
     let id_ms_time: usize = id_ms_time.parse()?;
-    let id_sq_num: usize = id_sq_num.parse()?;
+    let id_sq_num: usize = if let Ok(num) = id_sq_num.parse() {
+        num
+    } else {
+        if id_sq_num == "*" {
+            let mut len = stream
+                .iter()
+                .filter(|e| e.id.0 == id_ms_time)
+                .collect::<Vec<_>>()
+                .len();
+            if len == 0 && id_ms_time == 0 {
+                len = 1;
+            }
+            len
+        } else {
+            return err();
+        }
+    };
+
     if id_ms_time == 0 && id_sq_num == 0 {
         return Ok(RESPType::Error(String::from(
             "ERR The ID specified in XADD must be greater than 0-0",
@@ -88,11 +105,7 @@ async fn handle_xadd(field: Bulk, event: StreamEntry, db: Db) -> Result<RESPType
     }
 
     if let Some(last) = stream.last() {
-        let last = last.id.as_string();
-
-        let (ms_time, sq_num) = last.split_once('-').unwrap();
-        let ms_time: usize = ms_time.parse()?;
-        let sq_num: usize = sq_num.parse()?;
+        let (ms_time, sq_num) = last.id;
 
         match ms_time.cmp(&id_ms_time) {
             Ordering::Greater => return err(),
@@ -101,9 +114,13 @@ async fn handle_xadd(field: Bulk, event: StreamEntry, db: Db) -> Result<RESPType
         };
     }
 
+    let event = StreamEntry {
+        id: (id_ms_time, id_sq_num),
+        vals: map,
+    };
     stream.push(event);
 
-    Ok(RESPType::String(id.into_owned()))
+    Ok(RESPType::String(format!("{id_ms_time}-{id_sq_num}")))
 }
 
 async fn handle_type(field: Bulk, db: Db) -> RESPType {

@@ -105,7 +105,7 @@ pub struct StringEntry {
 
 #[derive(Clone, Debug)]
 pub struct StreamEntry {
-    pub id: Bulk,
+    pub id: (usize, usize),
     pub vals: HashMap<Bulk, Bulk>,
 }
 
