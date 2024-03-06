@@ -5,7 +5,7 @@ use std::{
     collections::HashMap,
     ops::AddAssign,
     sync::Arc,
-    time::{Duration, SystemTime},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::{
     fs::File,
@@ -78,21 +78,35 @@ async fn handle_xadd(field: Bulk, id: Bulk, map: HashMap<Bulk, Bulk>, db: Db) ->
         bail!("Called XADD on a non-stream");
     };
 
-    let (id_ms_time, id_sq_num) = id.split_once('-').unwrap();
-    let id_ms_time: usize = id_ms_time.parse()?;
-    let id_sq_num: usize = if let Ok(num) = id_sq_num.parse() {
-        num
+    let (id_ms_time, id_sq_num) = if let Some((id_ms_time, id_sq_num)) = id.split_once('-') {
+        let id_ms_time: usize = id_ms_time.parse()?;
+        let id_sq_num: usize = if let Ok(num) = id_sq_num.parse() {
+            num
+        } else {
+            if id_sq_num == "*" {
+                let mut len = stream
+                    .iter()
+                    .filter(|e| e.id.0 == id_ms_time)
+                    .collect::<Vec<_>>()
+                    .len();
+                if len == 0 && id_ms_time == 0 {
+                    len = 1;
+                }
+                len
+            } else {
+                return err();
+            }
+        };
+        (id_ms_time, id_sq_num)
     } else {
-        if id_sq_num == "*" {
-            let mut len = stream
+        if id == "*" {
+            let id_ms_time = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as usize;
+            let id_sq_num = stream
                 .iter()
                 .filter(|e| e.id.0 == id_ms_time)
                 .collect::<Vec<_>>()
                 .len();
-            if len == 0 && id_ms_time == 0 {
-                len = 1;
-            }
-            len
+            (id_ms_time, id_sq_num)
         } else {
             return err();
         }
