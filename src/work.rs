@@ -70,9 +70,15 @@ async fn handle_xrange(field: Bulk, start: Bulk, end: Bulk, db: Db) -> Result<RE
     };
 
     let start = start.as_string();
-    let (s_ms_time, s_sq_num) = start.split_once('-').unwrap();
-    let s_ms_time = s_ms_time.parse()?;
-    let s_sq_num = s_sq_num.parse()?;
+    let (s_ms_time, s_sq_num) = if start == "-" {
+        (0, 0)
+    } else if let Some((s_ms_time, s_sq_num)) = start.split_once('-') {
+        let s_ms_time = s_ms_time.parse()?;
+        let s_sq_num = s_sq_num.parse()?;
+        (s_ms_time, s_sq_num)
+    } else {
+        bail!("Invalid start");
+    };
 
     let end = end.as_string();
     let (e_ms_time, e_sq_num) = end.split_once('-').unwrap();
