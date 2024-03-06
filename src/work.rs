@@ -70,46 +70,51 @@ async fn handle_xrange(field: Bulk, start: Bulk, end: Bulk, db: Db) -> Result<RE
     };
 
     let start = start.as_string();
-    let (s_ms_time, s_sq_num) = if start == "-" {
-        (0, 0)
+    let start = if start == "-" {
+        None
     } else if let Some((s_ms_time, s_sq_num)) = start.split_once('-') {
         let s_ms_time = s_ms_time.parse()?;
         let s_sq_num = s_sq_num.parse()?;
-        (s_ms_time, s_sq_num)
+        Some((s_ms_time, s_sq_num))
     } else {
         bail!("Invalid start");
     };
 
     let end = end.as_string();
-    let (e_ms_time, e_sq_num) = end.split_once('-').unwrap();
-    let e_ms_time = e_ms_time.parse()?;
-    let e_sq_num = e_sq_num.parse()?;
+    let end = if end == "+" {
+        None
+    } else {
+        let (e_ms_time, e_sq_num) = end.split_once('-').unwrap();
+        let e_ms_time = e_ms_time.parse()?;
+        let e_sq_num = e_sq_num.parse()?;
+        Some((e_ms_time, e_sq_num))
+    };
 
     let res = stream
         .iter()
-        .filter_map(|e| {
-            let (ms_time, sq_num) = e.id;
-            if (ms_time >= s_ms_time && sq_num >= s_sq_num)
-                && (ms_time <= e_ms_time && sq_num <= e_sq_num)
-            {
-                let vals: Vec<_> = e
-                    .vals
-                    .iter()
-                    .map(|(k, v)| {
-                        vec![
-                            RESPType::Bulk(Some(k.to_owned())),
-                            RESPType::Bulk(Some(v.to_owned())),
-                        ]
-                    })
-                    .collect();
+        .skip_while(|e| {
+            start.is_some_and(|(s_ms_time, s_sq_num)| e.id.0 < s_ms_time || e.id.1 < s_sq_num)
+        })
+        .take_while(|e| {
+            !end.is_some_and(|(e_ms_time, e_sq_num)| e.id.0 > e_ms_time || e.id.1 > e_sq_num)
+        })
+        .map(|e| {
+            let vals = e
+                .vals
+                .iter()
+                .map(|(k, v)| {
+                    vec![
+                        RESPType::Bulk(Some(k.to_owned())),
+                        RESPType::Bulk(Some(v.to_owned())),
+                    ]
+                })
+                .flatten()
+                .collect();
 
-                Some(RESPType::Array(vec![
-                    RESPType::Bulk(Some(bulk!(format!("{}-{}", e.id.0, e.id.1).as_ref()))),
-                    RESPType::Array(vals.into_iter().flatten().collect()),
-                ]))
-            } else {
-                None
-            }
+            RESPType::Array(vec![
+                RESPType::Bulk(Some(bulk!(format!("{}-{}", e.id.0, e.id.1).as_ref()))),
+                RESPType::Array(vals),
+            ])
         })
         .collect();
 
