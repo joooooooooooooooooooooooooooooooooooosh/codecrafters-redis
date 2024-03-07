@@ -58,53 +58,58 @@ pub async fn handle_command(cmd: RESPCmd, db: Db, config: Config) -> Result<Opti
         RESPCmd::Type(field) => handle_type(field, db).await.into(),
         RESPCmd::Xadd((field, id, map)) => handle_xadd(field, id, map, db).await?.into(),
         RESPCmd::Xrange((field, start, end)) => handle_xrange(field, start, end, db).await?.into(),
-        RESPCmd::Xread((_ty, key, id)) => handle_xread(key, id, db).await?.into(),
+        RESPCmd::Xread((_ty, args)) => handle_xread(args, db).await?.into(),
         _ => unimplemented!(), // shouldn't be needed on a replica
     })
     .flatten())
 }
 
-async fn handle_xread(key: Bulk, id: Bulk, db: Db) -> Result<RESPType> {
+async fn handle_xread(args: Vec<(Bulk, Bulk)>, db: Db) -> Result<RESPType> {
     let db = db.lock().await;
-    let Some(Entry::Stream(stream)) = db.get(&key) else {
-        bail!("Called XRead on a non-stream");
-    };
 
-    let id = id.as_string();
-    let (id_ms_time, id_sq_num) = id.split_once('-').unwrap();
-    let id_ms_time: usize = id_ms_time.parse()?;
-    let id_sq_num: usize = id_sq_num.parse()?;
+    let resp = args
+        .into_iter()
+        .map(|(key, id)| {
+            // TODO: non-panicking error handling
 
-    let vals = stream
-        .iter()
-        .skip_while(|e| match e.id.0.cmp(&id_ms_time) {
-            Ordering::Less => true,
-            Ordering::Equal => e.id.1 <= id_sq_num,
-            Ordering::Greater => false,
-        })
-        .map(|e| {
-            RESPType::Array(vec![
-                RESPType::Bulk(Some(bulk!(format!("{}-{}", e.id.0, e.id.1).as_ref()))),
-                RESPType::Array(
-                    e.vals
-                        .iter()
-                        .map(|(k, v)| {
-                            vec![
-                                RESPType::Bulk(Some(k.to_owned())),
-                                RESPType::Bulk(Some(v.to_owned())),
-                            ]
-                        })
-                        .flatten()
-                        .collect(),
-                ),
-            ])
+            let Some(Entry::Stream(stream)) = db.get(&key) else {
+                panic!("Called XRead on a non-stream");
+            };
+
+            let id = id.as_string();
+            let (id_ms_time, id_sq_num) = id.split_once('-').unwrap();
+            let id_ms_time: usize = id_ms_time.parse().unwrap();
+            let id_sq_num: usize = id_sq_num.parse().unwrap();
+
+            let vals = stream
+                .iter()
+                .skip_while(|e| match e.id.0.cmp(&id_ms_time) {
+                    Ordering::Less => true,
+                    Ordering::Equal => e.id.1 <= id_sq_num,
+                    Ordering::Greater => false,
+                })
+                .map(|e| {
+                    RESPType::Array(vec![
+                        RESPType::Bulk(Some(bulk!(format!("{}-{}", e.id.0, e.id.1).as_ref()))),
+                        RESPType::Array(
+                            e.vals
+                                .iter()
+                                .map(|(k, v)| {
+                                    vec![
+                                        RESPType::Bulk(Some(k.to_owned())),
+                                        RESPType::Bulk(Some(v.to_owned())),
+                                    ]
+                                })
+                                .flatten()
+                                .collect(),
+                        ),
+                    ])
+                })
+                .collect();
+
+            RESPType::Array(vec![RESPType::Bulk(Some(key)), RESPType::Array(vals)])
         })
         .collect();
-
-    let resp = vec![RESPType::Array(vec![
-        RESPType::Bulk(Some(key)),
-        RESPType::Array(vals),
-    ])];
 
     Ok(RESPType::Array(resp))
 }

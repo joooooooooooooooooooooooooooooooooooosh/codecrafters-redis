@@ -38,7 +38,7 @@ pub enum RESPCmd {
     Type(Bulk),
     Xadd((Bulk, Bulk, HashMap<Bulk, Bulk>)),
     Xrange((Bulk, Bulk, Bulk)),
-    Xread((Bulk, Bulk, Bulk)),
+    Xread((Bulk, Vec<(Bulk, Bulk)>)),
 }
 
 macro_rules! respcmd {
@@ -142,20 +142,28 @@ impl RESPCmd {
         })
     }
 
-    fn parse_xread(mut parts: impl Iterator<Item = RESPType>) -> Result<(Bulk, Bulk, Bulk)> {
+    fn parse_xread(mut parts: impl Iterator<Item = RESPType>) -> Result<(Bulk, Vec<(Bulk, Bulk)>)> {
         let Some(RESPType::Bulk(Some(ty))) = parts.next() else {
             bail!("Xread requires a type");
         };
 
-        let Some(RESPType::Bulk(Some(field))) = parts.next() else {
-            bail!("Xread requires a key");
+        let mut args = Vec::with_capacity(2);
+        while let Some(RESPType::Bulk(Some(arg))) = parts.next() {
+            let Some(RESPType::Bulk(Some(arg_pair))) = parts.next() else {
+                bail!("Mismatching args for xread");
+            };
+            args.push(arg);
+            args.push(arg_pair);
+        }
+
+        if args.is_empty() {
+            bail!("Xread requires a key and id");
         };
 
-        let Some(RESPType::Bulk(Some(id))) = parts.next() else {
-            bail!("Xread requires an id");
-        };
+        let ids = args.split_off(args.len() / 2);
+        let paired_args = args.into_iter().zip(ids.into_iter()).collect();
 
-        Ok((ty, field, id))
+        Ok((ty, paired_args))
     }
 
     fn parse_xrange(mut parts: impl Iterator<Item = RESPType>) -> Result<(Bulk, Bulk, Bulk)> {
